@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import csv
 import json
 import shutil
@@ -505,6 +505,8 @@ def _new_reward_diagnostics_buffers() -> dict:
     return {
         "current_step": [],
         "reward": [],
+        "base_reward": [],
+        "reward_term_pymgrid": [],
         "reward_term_micro_throughput": [],
         "reward_term_soe_boundary": [],
         "cost_economic": [],
@@ -539,77 +541,107 @@ def _append_reward_diagnostics(
     reward_cfg: dict,
     buffers: dict,
 ) -> None:
-    keys = [
-        "reward",
-        "reward_term_micro_throughput",
-        "reward_term_soe_boundary",
-        "cost_economic",
-        "wear_cost",
-        "soe_violation",
-        "soe_boundary_penalty",
-        "action_violation",
-        "bad_logic_penalty",
-        "cyclic_aging",
-        "calendar_aging",
-        "self_sufficiency_ratio",
-        "micro_throughput",
-        "grid_import",
-        "grid_export",
-        "net_load",
-        "battery_action_requested",
-        "battery_action_clipped",
-        "battery_action_actual",
-        "battery_overshoots",
-        "price_buy",
-        "price_sell",
-        "soe",
-        "soh",
-    ]
+    reward_mode_raw = reward_cfg.get("mode", "custom")
+    reward_mode = str(reward_mode_raw).strip().lower()
+    use_pymgrid_reward = bool(reward_cfg.get("use_pymgrid_reward", False)) or reward_mode in {
+        "pymgrid",
+        "base",
+        "module",
+    }
+
+    coeffs = {}
+    active_coeffs = {}
+
+    if use_pymgrid_reward:
+        keys = [
+            "reward",
+            "base_reward",
+            "reward_term_pymgrid",
+        ]
+    else:
+        coeffs = {
+            "economic": _safe_float(reward_cfg.get("coeff_economic", 1.0), 1.0),
+            "soe_violation": _safe_float(reward_cfg.get("coeff_soe_violation", reward_cfg.get("coeff_soc_violation", 1.0)), 1.0),
+            "action_violation": _safe_float(reward_cfg.get("coeff_action_violation", 1.0), 1.0),
+            "micro_throughput": _safe_float(reward_cfg.get("coeff_micro_throughput", 0.0), 0.0),
+            "soe_boundary": _safe_float(reward_cfg.get("coeff_soe_boundary", reward_cfg.get("coeff_soc_boundary", 0.0)), 0.0),
+            "bad_logic": _safe_float(reward_cfg.get("coeff_bad_logic", 1.0), 1.0),
+            "cyclic_aging": _safe_float(reward_cfg.get("coeff_cyclic_aging", 1.0), 1.0),
+            "calendar_aging": _safe_float(reward_cfg.get("coeff_soh_calendar", 1.0), 1.0),
+            "ssr": _safe_float(reward_cfg.get("coeff_SSR", 0.0), 0.0),
+            "wear_cost": _safe_float(reward_cfg.get("coeff_wear_cost", 0.0), 0.0),
+        }
+        active_coeffs = {k: float(v) for k, v in coeffs.items() if abs(float(v)) > 1e-12}
+
+        coeff_to_metrics = {
+            "economic": ["cost_economic"],
+            "wear_cost": ["wear_cost"],
+            "soe_violation": ["soe_violation"],
+            "action_violation": ["action_violation"],
+            "micro_throughput": ["micro_throughput", "reward_term_micro_throughput"],
+            "soe_boundary": ["soe_boundary_penalty", "reward_term_soe_boundary"],
+            "bad_logic": ["bad_logic_penalty"],
+            "cyclic_aging": ["cyclic_aging"],
+            "calendar_aging": ["calendar_aging"],
+            "ssr": ["self_sufficiency_ratio"],
+        }
+
+        keys = ["reward", "base_reward"]
+        for coeff_name in active_coeffs.keys():
+            for metric_name in coeff_to_metrics.get(coeff_name, []):
+                if metric_name not in keys:
+                    keys.append(metric_name)
+
+        if len(keys) == 2:
+            keys.append("cost_economic")
 
     stats = {k: _compute_stats(buffers.get(k, [])) for k in keys}
-
-    coeffs = {
-        "economic": _safe_float(reward_cfg.get("coeff_economic", 1.0), 1.0),
-        "soe_violation": _safe_float(reward_cfg.get("coeff_soe_violation", reward_cfg.get("coeff_soc_violation", 1.0)), 1.0),
-        "action_violation": _safe_float(reward_cfg.get("coeff_action_violation", 1.0), 1.0),
-        "micro_throughput": _safe_float(reward_cfg.get("coeff_micro_throughput", 0.0), 0.0),
-        "soe_boundary": _safe_float(reward_cfg.get("coeff_soe_boundary", reward_cfg.get("coeff_soc_boundary", 0.0)), 0.0),
-        "bad_logic": _safe_float(reward_cfg.get("coeff_bad_logic", 1.0), 1.0),
-        "cyclic_aging": _safe_float(reward_cfg.get("coeff_cyclic_aging", 1.0), 1.0),
-        "calendar_aging": _safe_float(reward_cfg.get("coeff_soh_calendar", 1.0), 1.0),
-        "ssr": _safe_float(reward_cfg.get("coeff_SSR", 0.0), 0.0),
-        "wear_cost": _safe_float(reward_cfg.get("coeff_wear_cost", 0.0), 0.0),
-    }
-
-    base_scale = max(1e-12, stats["cost_economic"].get("mean_abs", 0.0) * abs(coeffs["economic"]))
-    mean_abs_contrib = {
-        "economic": stats["cost_economic"].get("mean_abs", 0.0) * abs(coeffs["economic"]),
-        "wear_cost": stats["wear_cost"].get("mean_abs", 0.0) * abs(coeffs["wear_cost"]),
-        "soe_violation": stats["soe_violation"].get("mean_abs", 0.0) * abs(coeffs["soe_violation"]),
-        "action_violation": stats["action_violation"].get("mean_abs", 0.0) * abs(coeffs["action_violation"]),
-        "micro_throughput": stats["micro_throughput"].get("mean_abs", 0.0) * abs(coeffs["micro_throughput"]),
-        "soe_boundary": stats["soe_boundary_penalty"].get("mean_abs", 0.0) * abs(coeffs["soe_boundary"]),
-        "bad_logic": stats["bad_logic_penalty"].get("mean_abs", 0.0) * abs(coeffs["bad_logic"]),
-        "cyclic_aging": stats["cyclic_aging"].get("mean_abs", 0.0) * abs(coeffs["cyclic_aging"]),
-        "calendar_aging": stats["calendar_aging"].get("mean_abs", 0.0) * abs(coeffs["calendar_aging"]),
-        "ssr": stats["self_sufficiency_ratio"].get("mean_abs", 0.0) * abs(coeffs["ssr"]),
-    }
-    ratios = {k: float(v / base_scale) for k, v in mean_abs_contrib.items()}
 
     reward_values = buffers.get("reward", [])
     step_values = buffers.get("current_step", [])
     outliers = []
     if reward_values and step_values:
         pairs = list(zip(step_values, reward_values))
-        pairs.sort(key=lambda x: x[1])  # ascending (most negative first)
+        pairs.sort(key=lambda x: x[1])
         outliers = pairs[:5]
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("\n" + "=" * 80 + "\n")
         handle.write(f"[{section}] episode={episode_idx} steps={episode_length}\n")
-        handle.write("reward_coeffs=" + json.dumps(coeffs, sort_keys=True) + "\n")
-        handle.write("mean_abs(|w*term|) ratios_vs_economic=" + json.dumps(ratios, sort_keys=True) + "\n")
+        handle.write(f"reward_mode={'pymgrid' if use_pymgrid_reward else 'custom'}\n")
+
+        if not use_pymgrid_reward:
+            coeffs_to_report = active_coeffs if active_coeffs else coeffs
+            handle.write("reward_coeffs=" + json.dumps(coeffs_to_report, sort_keys=True) + "\n")
+
+            def mean_abs(metric_name: str) -> float:
+                return float(stats.get(metric_name, {}).get("mean_abs", 0.0))
+
+            mean_abs_contrib = {
+                "economic": mean_abs("cost_economic") * abs(coeffs_to_report.get("economic", 0.0)),
+                "wear_cost": mean_abs("wear_cost") * abs(coeffs_to_report.get("wear_cost", 0.0)),
+                "soe_violation": mean_abs("soe_violation") * abs(coeffs_to_report.get("soe_violation", 0.0)),
+                "action_violation": mean_abs("action_violation") * abs(coeffs_to_report.get("action_violation", 0.0)),
+                "micro_throughput": mean_abs("micro_throughput") * abs(coeffs_to_report.get("micro_throughput", 0.0)),
+                "soe_boundary": mean_abs("soe_boundary_penalty") * abs(coeffs_to_report.get("soe_boundary", 0.0)),
+                "bad_logic": mean_abs("bad_logic_penalty") * abs(coeffs_to_report.get("bad_logic", 0.0)),
+                "cyclic_aging": mean_abs("cyclic_aging") * abs(coeffs_to_report.get("cyclic_aging", 0.0)),
+                "calendar_aging": mean_abs("calendar_aging") * abs(coeffs_to_report.get("calendar_aging", 0.0)),
+                "ssr": mean_abs("self_sufficiency_ratio") * abs(coeffs_to_report.get("ssr", 0.0)),
+            }
+            mean_abs_contrib = {k: float(v) for k, v in mean_abs_contrib.items() if v > 0.0}
+
+            if mean_abs_contrib:
+                if "economic" in mean_abs_contrib and mean_abs_contrib["economic"] > 1e-12:
+                    base_scale = mean_abs_contrib["economic"]
+                    ratios = {k: float(v / base_scale) for k, v in mean_abs_contrib.items()}
+                    handle.write("mean_abs(|w*term|) ratios_vs_economic=" + json.dumps(ratios, sort_keys=True) + "\n")
+                else:
+                    first_term = next(iter(mean_abs_contrib.keys()))
+                    base_scale = max(1e-12, mean_abs_contrib[first_term])
+                    ratios = {k: float(v / base_scale) for k, v in mean_abs_contrib.items()}
+                    handle.write("mean_abs(|w*term|) ratios_vs_first_active=" + json.dumps(ratios, sort_keys=True) + "\n")
 
         def write_line(name: str, s: dict) -> None:
             if s.get("count", 0) == 0:
@@ -621,21 +653,7 @@ def _append_reward_diagnostics(
                 f"min={s['min']:.6g} max={s['max']:.6g} mean_abs={s['mean_abs']:.6g}\n"
             )
 
-        for k in [
-            "reward",
-            "reward_term_micro_throughput",
-            "reward_term_soe_boundary",
-            "cost_economic",
-            "wear_cost",
-            "soe_violation",
-            "soe_boundary_penalty",
-            "action_violation",
-            "bad_logic_penalty",
-            "cyclic_aging",
-            "calendar_aging",
-            "self_sufficiency_ratio",
-            "micro_throughput",
-        ]:
+        for k in keys:
             write_line(k, stats[k])
 
         overshoots = buffers.get("battery_overshoots", [])

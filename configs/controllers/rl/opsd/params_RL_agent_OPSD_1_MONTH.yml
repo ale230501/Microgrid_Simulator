@@ -143,30 +143,30 @@ rl:
 
   reward:
     mode: pymgrid  # use native reward returned by microgrid.step (pymgrid modules)
-    coeff_economic: 2.3
-    coeff_soc_violation: 0
-    coeff_action_violation: 0.5
-    coeff_action_smoothness: 0.1
+    coeff_economic: 1.0
+    coeff_soc_violation: 1.0
+    coeff_action_violation: 1.0
+    coeff_action_smoothness: 0.0
     coeff_action_sign_change: 0.0
-    coeff_micro_throughput: 0.2
+    coeff_micro_throughput: 0.0
     coeff_bad_logic: 0.0
     coeff_soh_calendar: 0
     coeff_cyclic_aging: 0
-    coeff_wear_cost: 0.0
+    coeff_wear_cost: 1.0
     coeff_SSR: 0.0
 
-    scale_reward_components: false
-    scale_economic: 0.068
-    scale_action_violation: 0.216
+    scale_reward_components: true
+    scale_economic: 1.0
+    scale_action_violation: 1.0
     scale_action_smoothness: 1.0
     scale_micro_throughput: 1.0
-    scale_wear_cost: 0.022
-    scale_ssr: 0.62
+    scale_wear_cost: 1.0
+    scale_ssr: 1.0
 
     sell_discount: 1.0
-    micro_throughput_kwh: 0.1
-    bad_logic_discount: 0
-    bad_logic_aging_weight: 0
+    micro_throughput_kwh: 0.0
+    bad_logic_discount: 0.0
+    bad_logic_aging_weight: 0.0
     soc_tolerance: 1e-3
     action_tolerance: 1e-3
     calendar_aging_per_step: 0.0
