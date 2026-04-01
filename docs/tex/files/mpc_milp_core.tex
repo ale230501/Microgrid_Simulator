@@ -1,0 +1,33 @@
+\section{MODEL\_PREDICTIVE/mpc\_MILP.py}
+
+\subsection*{Scopo}
+Contiene il core MPC: caricamento dati, forecast oracle, costruzione e soluzione del problema MILP con costi energia e usura batteria.
+
+\subsection*{Componenti principali}
+\begin{itemize}[leftmargin=1.2cm]
+\item Utility config/time series: \texttt{load\_config}, \texttt{load\_time\_series}.
+\item Forecast oracle: \texttt{forecast\_*}.
+\item Stato batteria: dataclass \texttt{BatteryState}, \texttt{read\_battery\_state}.
+\item Modello ottimizzazione: \texttt{build\_mpc\_problem}.
+\item Orchestratore: classe \texttt{MPCController}.
+\end{itemize}
+
+\subsection*{Aspetti rilevanti}
+\begin{itemize}[leftmargin=1.2cm]
+\item Vincoli energetici (SoE, limiti carica/scarica, limiti rete).
+\item \texttt{load\_time\_series} usa direttamente \texttt{price\_buy/price\_sell} se presenti nel dataset
+(allineamento a scenario bundle); in assenza di tali colonne applica fallback a \texttt{price\_bands}.
+\item \texttt{read\_battery\_state} calcola limiti energetici direttamente dal \texttt{BatteryModule} (finestra SoC, \texttt{min/max\_capacity}, \texttt{model\_transition}) senza dipendere dal BMS.
+\item Fallback robusti per attributi opzionali non presenti nella batteria base (\texttt{effective\_capacity}, \texttt{max\_internal\_*}).
+\item Costo economico import/export.
+\item Usura ``base'' sempre inclusa in obiettivo tramite \texttt{battery\_cost\_cycle} della batteria semplice:
+\texttt{cost\_cycle * throughput\_interno} con throughput interno calcolato da carica/scarica e \texttt{efficiency}.
+\item Penalty opzionali aggiuntive: ramping e wear lineare a tratti (se \texttt{wear\_segments >= 2}).
+\item Logging strutturato per debug e analisi.
+\item Log MPC esteso con metriche dedicate alla usura semplice:
+\texttt{wear\_cost\_simple\_step}, \texttt{wear\_cost\_simple\_horizon},
+\texttt{wear\_throughput\_simple\_step\_kwh}.
+\end{itemize}
+
+\subsection*{Rischi}
+Le assunzioni su unita fisiche (kW/kWh e sample\_time) sono critiche. Ogni modifica deve mantenere coerenza unita in tutto il modello.

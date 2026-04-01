@@ -1,0 +1,70 @@
+# Virtual environments
+mio_env/
+mio_env*/
+venv_2/
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+.vs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tool/test cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+coverage.xml
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Generated outputs
+outputs/
+temp/
+mpc_log.csv
+ems_results_*.csv
+ems_results_*.png
+!docs/images/ems_results_*.png
+
+# Runtime logs
+*.log
+logs/*
+!logs/README.md
+
+# Large/local project data
+battery_simulation_data/
+REAL_TIME_RBC/
+BMS_AGENT/
+
+# Local-only folders kept out of git
+tests/
+docs/
+!docs/
+docs/*
+!docs/images/
+!docs/images/ems_results_*.png
+!docs/tex/
+!docs/tex/**
+
+# Local Tectonic bundle/cache (tooling artifact)
+tools/tectonic/cache/
+tools/tectonic/*.zip

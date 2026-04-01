@@ -1,0 +1,18 @@
+\chapter{Overview}
+
+Questa guida descrive i file Python core del progetto.
+La struttura e organizzata per dominio:
+
+\begin{itemize}[leftmargin=1.2cm]
+\item Simulator: costruzione microgrid, utility comuni, report.
+\item Rule Based Controller (RBC): logica rule-based e runner offline.
+\item Model Predictive Control (MPC): runner offline e core MILP.
+\item Reinforcement Learning (RL): ambiente, agente e runner operativo.
+\end{itemize}
+
+Regola di manutenzione:
+
+\begin{itemize}[leftmargin=1.2cm]
+\item ogni modifica ai file Python core deve aggiornare il relativo file in \texttt{docs/tex/files/};
+\item se cambia il comportamento esterno, aggiornare anche README o guide operative.
+\end{itemize}

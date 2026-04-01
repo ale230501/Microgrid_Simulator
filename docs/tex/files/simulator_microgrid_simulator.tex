@@ -1,0 +1,31 @@
+\section{SIMULATOR/microgrid\_simulator.py}
+
+\subsection*{Scopo}
+Costruisce la microgrid a partire dal file YAML usando i moduli base di \texttt{pymgrid} (senza layer BMS) e fornisce utility per esportare il log in formato compatibile con i runner EMS esterni.
+
+\subsection*{Interfacce principali}
+\begin{itemize}[leftmargin=1.2cm]
+\item Classe \texttt{MicrogridSimulator}.
+\item Metodo \texttt{build\_microgrid()} per istanziare moduli batteria/load/pv/grid e, opzionalmente, il modulo di bilanciamento (unbalanced energy) con costi configurabili.
+\item Metodo \texttt{get\_simulation\_log(...)} per estrarre dataframe e log flat.
+\end{itemize}
+
+\subsection*{Input/Output}
+\begin{itemize}[leftmargin=1.2cm]
+\item Input: \texttt{config\_path}, serie temporali load/pv/grid, modalita online/offline.
+\item Input batteria: usa direttamente \texttt{BatteryModule} (senza layer BMS). I limiti configurati \texttt{min\_soc/max\_soc} vengono esposti al livello EMS.
+\item Input opzionale sezione \texttt{scenario}: \texttt{initial\_step/final\_step}, \texttt{forecaster}, \texttt{forecast\_horizon}, \texttt{normalized\_action\_bounds}, \texttt{loss\_load\_cost}, \texttt{overgeneration\_cost}, \texttt{grid\_cost\_per\_unit\_co2}, flag \texttt{add\_unbalanced\_module}.
+\item Input batteria opzionali: \texttt{battery\_cost\_cycle}, \texttt{init\_soc} (fallback quando \texttt{init\_charge} e null).
+\item Output: oggetto \texttt{Microgrid} e dataframe log di simulazione.
+\end{itemize}
+
+\subsection*{Dipendenze e side effects}
+\begin{itemize}[leftmargin=1.2cm]
+\item Forza \texttt{SIMULATOR/src} in \texttt{sys.path} e importa \texttt{pymgrid} come package top-level.
+\item Se \texttt{gym} non e disponibile, registra un fallback via \texttt{gymnasium} per compatibilita import della nuova \texttt{src}.
+\item Non dipende dai transition model chimici \texttt{LFP/NMC/NCA}; usa \texttt{BatteryTransitionModel} base (o transition model esplicito passato da config).
+\item Uniforma il log con alias colonne (\texttt{balancing}/\texttt{unbalanced\_energy}, nomi prezzi grid) per non rompere runner/report esterni.
+\end{itemize}
+
+\subsection*{Note manutenzione}
+Quando si cambia la semantica della sezione \texttt{scenario} o dei parametri batteria/rete (\texttt{battery\_cost\_cycle}, costi di bilanciamento, limiti action), aggiornare questa sezione e i file \texttt{params\_*.yml} dei controller RBC/MPC/RL.

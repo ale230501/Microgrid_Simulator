@@ -1,0 +1,72 @@
+﻿# Legacy path kept for compatibility. Canonical file: configs/controllers/mpc/params_OPSD.yml
+battery:
+  capacity: 1452.0       # [kWh] scenario_0 max_capacity
+  power_max: 363.0       # [kW] scenario_0 per-step limit with sample_time=1.0h
+  battery_cost_cycle: 0.02  # EUR per kWh throughput (scenario_0)
+  init_charge: null
+  init_soc: 0.2
+  min_soc: 0.2
+  max_soc: 1.0
+  sample_time: 1.0     # [h]
+
+
+  efficiency: 0.9
+grid:
+  max_import_power: 1920   # [kW] scenario_0
+  max_export_power: 1920   # [kW] scenario_0
+
+  prices: [0.15, 0.05, 0.0, 0.0]
+scenario:
+  initial_step: 0
+  final_step: 8759
+  dataset_mode: pymgrid_bundle
+  forecaster: oracle
+  forecast_horizon: 23
+  forecaster_increase_uncertainty: false
+  forecaster_relative_noise: false
+  normalized_action_bounds: [0, 1]
+  raise_errors: false
+  add_unbalanced_module: true
+  loss_load_cost: 10.0
+  overgeneration_cost: 1.0
+  grid_cost_per_unit_co2: 0.1
+  load_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/LoadModule/time_series.csv.gz
+  pv_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/RenewableModule/time_series.csv.gz
+  grid_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/GridModule/time_series.csv.gz
+  start_datetime_utc: 2020-01-01T00:00:00Z
+  inference_dataset_path: ./data/scenario_0_timeseries_hourly.csv
+  forecast_dataset_path: ./data/scenario_0_timeseries_hourly.csv
+ems:
+  buffer_size: 96
+  timezone: Europe/Berlin
+  steps: 2688               # numero di timestep per simulazione offline
+
+  price_bands:
+    peak:
+      buy: 0.35
+      sell: 0.123
+      ranges:
+        - [18, 20]
+    standard:
+      buy: 0.30
+      sell: 0.123
+      ranges:
+        - [7, 17]
+        - [21, 22]
+    offpeak:
+      buy: 0.27
+      sell: 0.123
+
+mpc:
+  mpc_horizon: 96
+  forecaster: oracle
+  solver: GUROBI
+  ramp_penalty: 0.0  # penalty for battery power ramping in the objective function
+  ramp_kw_per_h: 20.0  # maximum allowed battery ramp rate in kW per hour
+  log_full_forecast: false
+  wear_segments: 0  # disabled with base pymgrid battery (no chemistry wear model)
+  wear_cost_scale: 0.0  # disabled with base pymgrid battery (no chemistry wear model)
+
+
+
+

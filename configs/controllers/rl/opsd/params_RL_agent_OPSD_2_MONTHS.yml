@@ -1,0 +1,192 @@
+######################################
+# RL Agent Configuration File   #
+######################################
+
+######################################
+# Microgrid Parameters
+######################################
+
+battery:
+  capacity: 1452.0       # [kWh] scenario_0 max_capacity
+  power_max: 363.0       # [kW] scenario_0 per-step limit with sample_time=1.0h
+  battery_cost_cycle: 0.02  # EUR per kWh throughput (scenario_0)
+  init_charge: null
+  init_soc: 0.2
+  min_soc: 0.2
+  max_soc: 1.0
+  sample_time: 1.0     # [h]
+
+  efficiency: 0.9
+grid:
+  max_import_power: 1920   # [kW] scenario_0
+  max_export_power: 1920   # [kW] scenario_0
+
+  prices: [0.15, 0.05, 0.0, 0.0]
+scenario:
+  initial_step: 0
+  final_step: 8759
+  dataset_mode: pymgrid_bundle
+  forecaster: oracle
+  forecast_horizon: 23
+  forecaster_increase_uncertainty: false
+  forecaster_relative_noise: false
+  normalized_action_bounds: [0, 1]
+  raise_errors: false
+  add_unbalanced_module: true
+  loss_load_cost: 10.0
+  overgeneration_cost: 1.0
+  grid_cost_per_unit_co2: 0.1
+  load_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/LoadModule/time_series.csv.gz
+  pv_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/RenewableModule/time_series.csv.gz
+  grid_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/GridModule/time_series.csv.gz
+  start_datetime_utc: 2020-01-01T00:00:00Z
+  inference_dataset_path: ./data/scenario_0_timeseries_hourly.csv
+  forecast_dataset_path: ./data/scenario_0_timeseries_hourly.csv
+ems:
+  buffer_size: None
+  timezone: Europe/Berlin
+  steps: None
+
+
+#######################################
+# Price Signal Configuration
+####################################### 
+
+  price_bands:
+    peak:
+      buy: 0.35
+      sell: 0.123
+      ranges:
+        - [18, 20]
+    standard:
+      buy: 0.30
+      sell: 0.123
+      ranges:
+        - [7, 17]
+        - [21, 22]
+    offpeak:
+      buy: 0.27
+      sell: 0.123
+
+######################################
+# RL Agent Parameters
+######################################
+
+rl:
+  dataset_path_train: ./data/scenario_0_timeseries_hourly.csv
+  output_dir: outputs/RL_AGENT
+  run_name: ppo_microgrid
+  seed: 42
+
+
+### Training Parameters
+  train_episode_steps: 5760
+  train_num_episodes: 60
+  train_random_start: true
+  randomize_initial_SoC: true
+  #train_start_step: 0
+
+  eval_episode_steps: 5760
+  eval_episodes: 1
+  eval_random_start: true
+  #eval_start_step: 0
+
+
+
+
+### Observation and Forecast Parameters
+
+  num_forecast: 0
+  include_time_feature: true
+  forecast_future: false
+  preprocessing: net-load
+  include_price: true
+  forecast_time: false
+  include_battery_power_limits_in_obs: false
+  allow_grid_charge_for_battery: false   # false => la batteria si carica solo con surplus PV
+  allow_battery_export_to_grid: false    # false => la batteria scarica solo per servire il carico locale
+  observation_limits:
+    load:
+      min: 0.0  # [kWh]
+      max: 2.8 # [kWh]
+    pv:
+      min: 0.0  # [kWh]
+      max: 2.5 # [kWh]
+
+  # Action smoothing near limits
+  action_deadband_kwh: 0.2
+  soc_action_guard_band: 0.03
+
+
+### Action and Observation Normalization Parameters
+
+  normalization:
+    observations:
+      enabled: true
+      normalize_already_scaled: false  # Whether to normalize observations that are already inside [0, 1]
+      # Time features (sin/cos hour/day) are kept unnormalized.
+    actions:
+      enabled: true
+    reward:
+      enabled: false
+    stats_path: null
+    save_stats: null
+    epsilon: 1e-4  # Small value to avoid division by zero
+
+### Reward Parameters
+
+  reward:
+    coeff_economic: 3.0
+    coeff_soc_violation: 0
+    coeff_action_violation: 2.0
+    coeff_bad_logic: 0
+    coeff_soh_calendar: 0
+    coeff_cyclic_aging: 0
+    coeff_wear_cost: 0.0
+    coeff_SSR: 0.0
+    scale_reward_components: false
+    scale_economic: 1.0
+    scale_action_violation: 1.0
+    scale_wear_cost: 1.0
+    scale_ssr: 1.0
+    sell_discount: 1
+    bad_logic_discount: 0
+    bad_logic_aging_weight: 0
+    soc_tolerance: 1e-3
+    action_tolerance: 1e-3
+    calendar_aging_per_step: 0.0
+
+### RL Algorithm Parameters
+
+  algorithm: PPO
+  ppo:
+    learning_rate: 1.5e-4
+    n_steps: 2048
+    batch_size: 256
+    n_epochs: 10
+    gamma: 0.9996
+    gae_lambda: 0.97
+    clip_range: 0.15
+    ent_coef: 2.0e-3
+    policy_net: [256, 256]
+
+
+  checkpoint_freq: 100000000
+  num_envs: 1
+  tensorboard_auto_open: false
+  tensorboard_host: localhost
+  tensorboard_port: 6008
+  tb_reasoning_plot_every: 1  # 1=every episode, 0=disabled
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,20 @@
+# Legacy copy. Canonical location: configs/sweeps/rl_reward_sweep_example_OPSD_2_MONTHS.yml
+base_config: configs/controllers/rl/opsd/params_RL_agent_OPSD_2_MONTHS.yml
+output_dir: outputs/RL_REWARD_SWEEP_OPSD_2_MONTHS
+run_prefix: opsd_reward_2m
+
+tensorboard:
+  enabled: true
+  host: localhost
+  port: 6152
+  open_browser: true
+
+# Baseline in base_config is ~ economic=3, wear=2, action=2, SSR=2
+params:
+  rl.reward.coeff_economic: [2, 3]
+  rl.reward.coeff_wear_cost: [0, 1, 2]
+  rl.reward.coeff_action_violation: [1, 2]
+  rl.reward.coeff_SSR: [0.0, 1.0, 2.0]
+
+seeds: [42]
+

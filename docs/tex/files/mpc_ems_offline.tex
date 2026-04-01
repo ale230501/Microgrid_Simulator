@@ -1,0 +1,34 @@
+\section{MODEL\_PREDICTIVE/ems\_offline\_mpc\_v0.py}
+
+\subsection*{Scopo}
+Runner offline MPC: prepara dati reali e forecast, esegue controllo MPC step-by-step e salva risultati.
+
+\subsection*{CLI}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{--config}: YAML MPC.
+\item \texttt{--MPC\_inference\_dataset\_path}: dataset usato dal simulatore (opzionale se presente in config).
+\item \texttt{--MPC\_forecast\_dataset\_path}: dataset usato dal controller MPC (opzionale, fallback a config e poi a inference dataset).
+\item \texttt{--start-step}, \texttt{--end-step}: finestra simulata.
+\end{itemize}
+
+\subsection*{Flusso}
+\begin{itemize}[leftmargin=1.2cm]
+\item Carica configurazione e seleziona la sorgente dati:
+\texttt{scenario.dataset\_mode=pymgrid\_bundle} usa i tre file scenario (\texttt{load/pv/grid}),
+altrimenti usa il CSV \texttt{inference} tradizionale.
+\item In modalita \texttt{pymgrid\_bundle} i prezzi buy/sell sono letti dal dataset \texttt{GridModule};
+in modalita CSV senza colonne prezzo, i prezzi sono derivati da \texttt{price\_bands}.
+\item Risolve i path dataset con priorita:
+CLI \textrightarrow{} \texttt{ems.*}/\texttt{scenario.*} nel config \textrightarrow{} fallback forecast=inference.
+\item Costruisce microgrid offline.
+\item Istanzia \texttt{MPCController} (da \texttt{mpc\_MILP.py}).
+\item A ogni step invoca \texttt{get\_action()} e applica \texttt{microgrid.step()}.
+\item Salva log in cartella run timestampata sotto \texttt{outputs/MPC}.
+\item Il \texttt{final\_report.txt} include il campo \texttt{Degradazione SoH : ON/OFF} ricavato dalla configurazione batteria.
+\item Estrae cronologia transizioni batteria solo se disponibile (eventuale manager/transition model); con batteria base \texttt{pymgrid} la cronologia puo essere assente.
+\item Il conteggio overshoot e letto in modo opzionale (fallback a \texttt{0} se l'attributo non e presente).
+\item Mostra tabelle finali con \texttt{pandasgui} usando dataframe normalizzati (colonne flat); il \texttt{forecast\_log} viene mostrato solo se contiene dati.
+\end{itemize}
+
+\subsection*{Note manutenzione}
+Qualsiasi cambio a nomi argomenti CLI va propagato in script test/sweep e README.

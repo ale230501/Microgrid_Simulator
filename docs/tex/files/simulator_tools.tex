@@ -1,0 +1,27 @@
+\section{SIMULATOR/tools.py}
+
+\subsection*{Scopo}
+Raccoglie utility condivise per configurazione EMS, tariffe, report finale e plotting risultati.
+
+\subsection*{Interfacce principali}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{load\_config(path)}: valida la sezione \texttt{ems} del YAML e risolve i path dataset con fallback \texttt{ems.* -> scenario.*}.
+\item \texttt{load\_pymgrid\_scenario\_bundle(...)}: carica i tre file separati di scenario \texttt{pymgrid} (load/pv/grid in \texttt{csv.gz}) e restituisce serie pronte per i runner offline.
+\item \texttt{compute\_offline\_tariff\_vectors(...)}: genera prezzi buy/sell allineati ai timestamp.
+\item \texttt{print\_final\_report(...)} e \texttt{plot\_results(...)}.
+\item \texttt{print\_final\_report(...)} supporta il parametro opzionale \texttt{soh\_degradation\_enabled} per stampare nel report finale lo stato \texttt{ON/OFF} della degradazione SoH.
+\item \texttt{add\_module\_columns(...)} per normalizzare colonne MultiIndex.
+\end{itemize}
+
+\subsection*{Input/Output}
+\begin{itemize}[leftmargin=1.2cm]
+\item Input: dataframe log, timestamp, configurazioni fasce prezzo.
+\item Output: vettori tariffari, report testuale e grafici su file.
+\item Nel grafico batteria, \texttt{plot\_results} mostra \texttt{SoE} (e, se presente nel log, anche \texttt{True SoC} tratteggiato).
+\item \texttt{plot\_results} genera anche un grafico aggiuntivo con la cumulata del reward per modulo (\texttt{battery/grid/load/pv/unbalanced\_energy/balance}) lungo gli step, con legenda in formato \texttt{(module, index, reward)}.
+\end{itemize}
+
+\subsection*{Rischi}
+Le funzioni di report assumono nomi colonna coerenti con il formato log di microgrid. Se cambia lo schema del log, aggiornare mapping e fallback.
+Per il loader scenario \texttt{pymgrid}, verificare che i file grid abbiano almeno due colonne (buy/sell).
+\texttt{add\_module\_columns(...)} riallinea automaticamente serie con lunghezza diversa dal log (truncate/pad con NaN o NaT) per evitare errori di assegnazione in presenza di colonne opzionali vuote.

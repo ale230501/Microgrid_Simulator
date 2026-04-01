@@ -1,0 +1,81 @@
+base_config: configs/controllers/rl/opsd/params_RL_agent_OPSD_1_MONTH.yml
+output_dir: outputs/RL_REWARD_SWEEP_OPSD_1_M_SAC
+run_prefix: opsd_reward_1m
+
+tensorboard:
+  enabled: false
+  host: localhost
+  port: 6155
+  open_browser: false
+
+
+params:
+  # First sweep focused on battery usage after wear-cost fix 
+  rl.algorithm: [SAC]
+  rl.action_deadband_kwh: [0.0]
+  rl.soc_action_guard_band: [0.0]
+
+  rl.reward.coeff_economic: [0.8, 1.0, 1.2]
+  rl.reward.coeff_wear_cost: [0.0]
+  rl.reward.coeff_soc_violation: [2.0, 4.0, 6.0]
+  rl.reward.coeff_action_violation: [1.0, 2.0]
+  rl.reward.coeff_action_smoothness: [0.0]
+  rl.reward.coeff_action_sign_change: [0.0]
+  rl.reward.coeff_micro_throughput: [0.0]
+  rl.reward.coeff_bad_logic: [0.0]
+  rl.reward.coeff_soh_calendar: [0.0]
+  rl.reward.coeff_cyclic_aging: [0.0]
+  rl.reward.coeff_SSR: [0.0]
+
+  rl.reward.scale_reward_components: [true]
+  rl.reward.scale_economic: [1.0]
+  rl.reward.scale_action_violation: [1.0]
+  rl.reward.scale_wear_cost: [1.0]
+  rl.reward.scale_ssr: [1.0]
+  rl.reward.scale_action_smoothness: [1.0]
+  rl.reward.scale_micro_throughput: [1.0]
+  rl.reward.scale_soc_boundary: [1.0]
+
+  rl.reward.sell_discount: [1.0]
+  rl.reward.bad_logic_discount: [0.0]
+  rl.reward.bad_logic_aging_weight: [0.0]
+  rl.reward.soc_tolerance: [1.0e-3]
+  rl.reward.action_tolerance: [1.0e-3]
+  rl.reward.calendar_aging_per_step: [0.0]
+  rl.reward.micro_throughput_kwh: [0.0]
+
+  # Current PPO baseline
+  rl.ppo.learning_rate: [3.0e-4]
+  rl.ppo.n_steps: [512]
+  rl.ppo.batch_size: [128]
+  rl.ppo.n_epochs: [10]
+  rl.ppo.gamma: [0.9966]
+  rl.ppo.gae_lambda: [0.95]
+  rl.ppo.clip_range: [0.20]
+  rl.ppo.ent_coef: [1.0e-3]
+
+  # SAC baseline (kept fixed unless you explicitly sweep these fields)
+  rl.sac.learning_rate: [3.0e-4]
+  rl.sac.buffer_size: [100000]
+  rl.sac.learning_starts: [1000]
+  rl.sac.batch_size: [256]
+  rl.sac.tau: [0.005]
+  rl.sac.gamma: [0.99]
+  rl.sac.train_freq: [1]
+  rl.sac.gradient_steps: [4]
+  rl.sac.ent_coef: [auto_0.1]
+  rl.sac.target_update_interval: [1]
+  rl.sac.target_entropy: [-0.5]
+  rl.sac.use_sde: [false]
+  rl.sac.sde_sample_freq: [-1]
+  rl.sac.policy_net: [[64, 64]]
+
+  rl.tb_reasoning_plot_every: [1]
+
+
+  # Tensorboard logging options
+  rl.tb_enable_figures: false      # disabilita tutte le immagini/figure
+  rl.tb_enable_histograms: false   # disabilita tutte le distribuzioni/hist
+
+
+seeds: [11, 22, 33, 42, 55]

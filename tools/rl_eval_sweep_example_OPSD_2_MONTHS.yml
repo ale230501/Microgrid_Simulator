@@ -1,0 +1,12 @@
+# Legacy copy. Canonical location: configs/sweeps/rl_eval_sweep_example_OPSD_2_MONTHS.yml
+base_output: outputs/RL_REWARD_SWEEP_OPSD_2_MONTHS
+max_parallel: 8
+device: cpu
+omp_threads: 2
+mkl_threads: 2
+
+# Force eval window for all models:
+eval_random_start: false
+eval_start_step: 0
+eval_steps: 5760
+

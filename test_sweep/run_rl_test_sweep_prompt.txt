@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File .\\run_rl_test_sweep.ps1

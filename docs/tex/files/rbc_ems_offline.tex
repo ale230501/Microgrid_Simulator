@@ -1,0 +1,38 @@
+\section{RULE\_BASED/ems\_offline.py}
+
+\subsection*{Scopo}
+Runner offline del controller RBC: carica dataset, costruisce microgrid, esegue loop di controllo e salva output.
+
+\subsection*{CLI}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{--config}: YAML del controller RBC.
+\item \texttt{--inference-dataset-path}: CSV con colonne \texttt{datetime, solar, load} (opzionale se presente in config).
+\item \texttt{--start-step}, \texttt{--end-step}: finestra temporale della simulazione.
+\end{itemize}
+
+\subsection*{Flusso}
+\begin{itemize}[leftmargin=1.2cm]
+\item Carica e valida config EMS (\texttt{load\_config}).
+\item Se \texttt{--inference-dataset-path} non e passato, usa fallback dal config:
+\texttt{ems.inference\_dataset\_path} oppure \texttt{scenario.inference\_dataset\_path}.
+\item Se \texttt{scenario.dataset\_mode = pymgrid\_bundle} e sono presenti
+\texttt{scenario.load\_dataset\_path}, \texttt{scenario.pv\_dataset\_path}, \texttt{scenario.grid\_dataset\_path},
+carica direttamente i dataset originali dello scenario \texttt{pymgrid} (file separati \texttt{csv.gz}).
+\item Crea una cartella di run dedicata in \texttt{outputs/RBC/RBC\_data\_\{timestamp\}} (con suffisso progressivo in caso di collisione).
+\item Costruisce serie grid prices da fasce tariffarie.
+\item Istanzia \texttt{MicrogridSimulator} e \texttt{Rule\_Based\_EMS}.
+\item Esegue step loop e salva log/output nella cartella della run.
+\item Nel report finale stampa anche lo stato della degradazione SoH (\texttt{ON/OFF}) coerente con il flag batteria \texttt{disable\_soh\_degradation}.
+\item Estrae, salva e plotta la cronologia batteria solo se disponibile (eventuale manager/transition model); con batteria base \texttt{pymgrid} questa parte puo risultare vuota.
+\item Il conteggio overshoot e letto in modo opzionale (fallback a \texttt{0} se l'attributo non esiste sul modulo batteria).
+\end{itemize}
+
+\subsection*{Output principali}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{outputs/RBC/RBC\_data\_\{timestamp\}/microgrid\_log.csv}
+\item \texttt{outputs/RBC/RBC\_data\_\{timestamp\}/final\_report.txt}
+\item grafici/artefatti batteria e visualizzazione tabellare con \texttt{pandasgui}.
+\end{itemize}
+
+\subsection*{Note manutenzione}
+Se cambia la CLI, aggiornare README e script test \texttt{scripts/test/test\_rbc.sh}.

@@ -1,0 +1,101 @@
+﻿\section{RL\_AGENT/EMS\_RL\_agent.py}
+
+\subsection*{Scopo}
+Definisce configurazione RL, ambiente Gym offline della microgrid e wrapper agente RL.
+Il file centralizza caricamento YAML, costruzione della microgrid, traduzione
+dell'azione RL in setpoint batteria e calcolo della reward composita.
+
+\subsection*{Interfacce principali}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{load\_rl\_agent\_config}: merge config con default robusti.
+\item \texttt{OfflineMicrogridRLEnv}: ambiente RL basato su \texttt{gym.Env} con osservazioni/azioni e
+  reward shaping.
+\item \texttt{EMS\_RL\_Agent}: orchestrazione training/inference con algoritmi SB3
+  selezionabili da config (\texttt{PPO} o \texttt{SAC}).
+\item Config algoritmo:
+  \texttt{rl.algorithm} sceglie l'algoritmo, con blocchi dedicati
+  \texttt{rl.ppo} e \texttt{rl.sac}; default retrocompatibile su \texttt{PPO}.
+\item Compatibilita PPO con config esterne:
+  \texttt{rl.ppo.normalize\_advantage} viene passato al costruttore SB3;
+  il campo legacy \texttt{center\_adv} e' supportato come alias.
+\item Contract dei builder modello:
+  \texttt{\_build\_ppo\_model} e \texttt{\_build\_sac\_model} restituiscono sempre
+  l'istanza SB3 costruita; \texttt{build\_model} assegna poi il risultato a
+  \texttt{self.model}.
+\item Config osservazioni batteria:
+  \texttt{soe} e \texttt{soh} sono inclusi nello stato RL; il flag
+  \texttt{rl.include\_battery\_power\_limits\_in\_obs} (default \texttt{true}) permette di
+  includere/escludere \texttt{max\_production/max\_consumption}.
+\item Vincoli opzionali sui flussi energetici:
+  \texttt{rl.allow\_grid\_charge\_for\_battery} disabilita la carica da rete quando vale
+  \texttt{false}, limitando la carica al solo surplus PV del timestep.
+  \texttt{rl.allow\_battery\_export\_to\_grid} puo' limitare la scarica della batteria
+  al solo carico locale, evitando export causato dalla batteria.
+\item Naming parametri RL coerente con SoE:
+  \texttt{randomize\_initial\_SoE}, \texttt{soe\_action\_guard\_band},
+  \texttt{coeff\_soe\_violation}, \texttt{soe\_tolerance} (fallback legacy da \texttt{soc\_*} supportato).
+\item Reward terms batteria rinominati in log/info da \texttt{soc\_*} a \texttt{soe\_*}
+  (es. \texttt{soe\_violation}, \texttt{reward\_term\_soe\_violation}).
+\item Modalita reward:
+  \texttt{rl.reward.mode: custom} usa la somma pesata dei termini RL;
+  \texttt{rl.reward.mode: pymgrid} usa direttamente la \texttt{base\_reward}
+  restituita da \texttt{microgrid.step}.
+\item Il termine reward \texttt{soe\_violation} viene letto da \texttt{step\_info} se disponibile,
+  con fallback locale su limiti SoE in assenza di campi dedicati.
+\item Il clipping dell'azione batteria combina limiti fisici modulo e finestra SoC
+  configurata (\texttt{min\_soc/max\_soc}) senza dipendere da un layer BMS.
+\item Il termine \texttt{wear\_cost} usa eventuali campi presenti in \texttt{step\_info} o nel
+  transition model; se assenti resta nullo.
+\item Nel log simulazione, la transition history viene letta se disponibile sul modulo/transition model.
+\end{itemize}
+
+\subsection*{Flusso dati}
+\begin{itemize}[leftmargin=1.2cm]
+\item Carica i dati offline tramite \texttt{RL\_utils\_offline.load\_offline\_timeseries}.
+\item In modalita \texttt{scenario.dataset\_mode: pymgrid\_bundle} usa direttamente i file
+  \texttt{LoadModule/RenewableModule/GridModule} dello scenario pymgrid, inclusi
+  \texttt{price\_buy/price\_sell} reali del \texttt{GridModule}.
+\item In modalita CSV usa \texttt{price\_buy/price\_sell} dal dataset se presenti,
+  altrimenti fallback alle \texttt{ems.price\_bands}.
+\item Istanzia simulatore microgrid.
+\item Costruisce osservazioni RL da load, PV, SoE, SoH, prezzi e forecast opzionali.
+\item Traduce l'azione RL in richiesta batteria, applica deadband, guard band SoE,
+  vincoli opzionali sui flussi energetici e clipping fisico di batteria/rete.
+\item Esegue \texttt{microgrid.step}, legge i log modulo e compone reward e diagnostica.
+\item La reward finale usata dall'agente dipende da \texttt{rl.reward.mode}:
+  in \texttt{custom} e' la somma pesata dei termini RL, in \texttt{pymgrid}
+  coincide con la \texttt{base\_reward} del simulatore.
+\end{itemize}
+
+\subsection*{Dipendenze critiche}
+\begin{itemize}[leftmargin=1.2cm]
+\item \texttt{SIMULATOR.microgrid\_simulator.MicrogridSimulator} per costruire la microgrid.
+\item \texttt{RL\_utils\_offline.load\_offline\_timeseries} per dataset, prezzi ed emissioni.
+\item \texttt{stable\_baselines3}, \texttt{gymnasium}, \texttt{torch}, \texttt{numpy}, \texttt{pandas}, \texttt{yaml}.
+\item Battery module base \texttt{pymgrid} per SoE/limiti e transition model opzionale per metriche avanzate.
+\end{itemize}
+
+\subsection*{Effetti collaterali}
+\begin{itemize}[leftmargin=1.2cm]
+\item Legge file YAML di configurazione e dataset CSV/gz dal filesystem.
+\item Puo' leggere/scrivere file di observation bounds e statistiche di normalizzazione.
+\item Arricchisce \texttt{info} a ogni step con diagnostica dettagliata e popola i log della microgrid.
+\item I flag di policy possono ridurre lo spazio di azione effettivamente disponibile all'agente.
+\end{itemize}
+
+\subsection*{Rischi e note di manutenzione}
+\begin{itemize}[leftmargin=1.2cm]
+\item Normalizzazione osservazioni/azioni/reward.
+\item Coerenza tra \texttt{rl.algorithm} e checkpoint caricato:
+  il loader usa il backend corretto (\texttt{PPO.load} o \texttt{SAC.load}) in base al config.
+\item Se cambia la composizione dello stato (es. flag \texttt{include\_battery\_*\_in\_obs}),
+  file di bounds/normalizzazione salvati da run precedenti possono non essere compatibili
+  (dimensione osservazione diversa).
+\item Coerenza tra finestra episodio e lunghezza dataset.
+\item Coefficienti reward: possono cambiare fortemente il comportamento dell'agente.
+\item I flag sui flussi energetici modificano la policy energetica del problema:
+  modelli addestrati senza vincolo possono non restare ottimali con i vincoli attivi, quindi
+  e' consigliabile riaddestrare o almeno rivalutare il modello nella nuova configurazione.
+\item In scenario-bundle mode, ogni mismatch tra percorsi scenario e file \texttt{.csv.gz}
+  produce errore di bootstrap dell'ambiente prima del training.
+\end{itemize}

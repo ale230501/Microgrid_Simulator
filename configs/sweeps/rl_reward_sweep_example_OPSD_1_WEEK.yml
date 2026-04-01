@@ -1,0 +1,20 @@
+base_config: configs/controllers/rl/opsd/params_RL_agent_OPSD_1_WEEK.yml
+output_dir: outputs/RL_REWARD_SWEEP_OPSD_1_WEEK
+run_prefix: opsd_reward_1w
+
+tensorboard:
+  enabled: true
+  host: localhost
+  port: 6150
+  open_browser: true
+
+# Baseline in base_config is ~ economic=3, wear=0 (disabled), action=2, SSR=2
+params:
+  rl.reward.coeff_economic: [2, 3]
+  rl.reward.coeff_wear_cost: [0.0]
+  rl.reward.coeff_action_violation: [1, 2]
+  rl.reward.coeff_SSR: [0.0, 1.0, 2.0]
+
+seeds: [42]
+
+

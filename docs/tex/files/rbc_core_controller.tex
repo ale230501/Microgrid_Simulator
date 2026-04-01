@@ -1,0 +1,20 @@
+\section{RULE\_BASED/RBC\_EMS.py}
+
+\subsection*{Scopo}
+Implementa la policy greedy rule-based per decidere energia batteria/rete allo step corrente.
+
+\subsection*{Interfaccia}
+\begin{itemize}[leftmargin=1.2cm]
+\item Classe \texttt{Rule\_Based\_EMS}.
+\item Metodo \texttt{control(load\_kwh, pv\_kwh, band=None)} che restituisce \texttt{(e\_batt, e\_grid)}.
+\end{itemize}
+
+\subsection*{Logica}
+\begin{itemize}[leftmargin=1.2cm]
+\item Se \texttt{load > pv}: scarica batteria entro limiti fisici e finestra SoC configurata, poi importa rete.
+\item Se \texttt{pv > load}: carica batteria entro limiti fisici e finestra SoC configurata, poi esporta surplus.
+\item Se bilanciato: nessuna azione.
+\end{itemize}
+
+\subsection*{Assunzioni}
+Controllore miope, non usa forecast e non ottimizza su orizzonte multiplo.

@@ -1,0 +1,40 @@
+﻿\section{RL\_AGENT/ems\_offline\_RL\_agent.py}
+
+\subsection*{Scopo}
+Runner operativo per training/eval/test RL offline, con gestione output, callback, log e TensorBoard.
+
+\subsection*{Responsabilita}
+\begin{itemize}[leftmargin=1.2cm]
+\item Parsing argomenti CLI e selezione modalita (\texttt{train/eval/test/rollout}).
+\item Override algoritmo da CLI con \texttt{--algorithm} (\texttt{ppo} o \texttt{sac}),
+  applicato al campo \texttt{rl.algorithm} prima della build/load del modello.
+\item Selezione dataset per modalita e validazione start/steps.
+\item Split train/eval su finestre temporali dedicate:
+  supporta \texttt{rl.train\_split\_start\_step}/\texttt{rl.train\_split\_end\_step} e
+  \texttt{rl.eval\_split\_start\_step}/\texttt{rl.eval\_split\_end\_step}; il runner
+  applica i limiti prima della creazione dell'env.
+\item Compatibilita dataset-mode: supporta sia dataset CSV sia
+  \texttt{scenario.dataset\_mode: pymgrid\_bundle} senza forzare path CSV su \texttt{eval/test}
+  quando i dati arrivano dallo scenario.
+\item Setup callback e logging (\texttt{TensorboardLogger}, checkpoint, metriche episodio).
+\item Diagnostica reward/stato coerente con naming \texttt{soe\_*} (non \texttt{soc\_*})
+  per violazioni limite e stato energetico osservato.
+\item Export transition history robusto: plot/salvataggio leggono prima dal BMS e
+  usano il transition model solo come fallback legacy.
+\item Export risultati e grafici finali.
+\item Nel \texttt{final\_report.txt} stampa lo stato \texttt{Degradazione SoH : ON/OFF}
+  usando la configurazione batteria del simulatore.
+\end{itemize}
+
+\subsection*{Dipendenze}
+\begin{itemize}[leftmargin=1.2cm]
+\item Usa \texttt{EMS\_RL\_agent.py} per env e agente.
+\item Usa \texttt{tb\_logger.py} per logging avanzato.
+\end{itemize}
+
+\subsection*{Note manutenzione}
+Quando si cambiano flag CLI, policy di selezione dataset o percorsi output,
+aggiornare script sweep/test RL e documentazione operativa.
+Le coppie \texttt{*\_split\_start\_step}/\texttt{*\_split\_end\_step} sono riferite
+all'indice globale del dataset; gli \texttt{rl.train\_start\_step}/\texttt{rl.eval\_start\_step}
+vengono ricondotti automaticamente all'indice locale della finestra selezionata.
