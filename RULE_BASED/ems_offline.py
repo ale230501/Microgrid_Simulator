@@ -39,6 +39,7 @@ from SIMULATOR.tools import (
     compute_offline_tariff_vectors,
     plot_results,
     add_module_columns,
+    add_grid_cost_breakdown_columns,
     print_final_report,
 )
 from RULE_BASED.RBC_EMS import Rule_Based_EMS
@@ -65,8 +66,8 @@ def main():
     parser.add_argument(
         "--start-step",
         type=int,
-        default=0,
-        help="Start timestep index in the CSV (inclusive).",
+        default=None,
+        help="Start timestep index in the CSV (inclusive). If omitted, uses ems.start_step from config.",
     )
     parser.add_argument(
         "--end-step",
@@ -114,8 +115,10 @@ def main():
 
     price_config = config['price_bands']               # Configurazione fasce prezzi
     simulation_steps = config['steps']                 # Numero di step di simulazione da eseguire
-    start_step = int(args.start_step)
-    end_step_cfg = args.end_step
+    start_step = int(args.start_step) if args.start_step is not None else int(config.get("start_step", 0) or 0)
+    end_step_cfg = args.end_step if args.end_step is not None else config.get("end_step", None)
+    if end_step_cfg is not None:
+        end_step_cfg = int(end_step_cfg)
 
     timezone_str = config['timezone']   # Configura timezone per timestamp 
 
@@ -306,6 +309,7 @@ def main():
     }
 
     microgrid_df = add_module_columns(microgrid_df, additional_columns)
+    microgrid_df = add_grid_cost_breakdown_columns(microgrid_df)
 
     print(transition_model)
 
@@ -365,3 +369,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

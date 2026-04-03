@@ -1,4 +1,4 @@
-﻿import json
+import json
 import math
 import os
 import sys
@@ -31,7 +31,7 @@ if str(ROOT_DIR) not in sys.path:
 from SIMULATOR.microgrid_simulator import MicrogridSimulator
 from RL_utils_offline import load_offline_timeseries
 from normalization import RunningMeanStd
-from SIMULATOR.tools import add_module_columns
+from SIMULATOR.tools import add_module_columns, add_grid_cost_breakdown_columns
 
 
 def load_rl_agent_config(path: str) -> Dict[str, Any]:
@@ -1302,6 +1302,7 @@ class OfflineMicrogridRLEnv(gym.Env):
             ("price", 0, "price_sell"): self.price_sell[start:end],
         }
         microgrid_df = add_module_columns(microgrid_df, additional_columns)
+        microgrid_df = add_grid_cost_breakdown_columns(microgrid_df)
         return microgrid_df, log
 
 
@@ -1470,4 +1471,5 @@ class EMS_RL_Agent:
             )
 
         return DummyVecEnv([_make_env])
+
 

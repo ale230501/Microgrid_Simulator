@@ -29,6 +29,7 @@ scenario:
   loss_load_cost: 10.0
   overgeneration_cost: 1.0
   grid_cost_per_unit_co2: 0.1
+  # Use full scenario_0 datasets and select window via ems.start_step/end_step.
   load_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/LoadModule/time_series.csv.gz
   pv_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/RenewableModule/time_series.csv.gz
   grid_dataset_path: ./SIMULATOR/src/pymgrid/data/scenario/pymgrid25/microgrid_0/data/cls_params/GridModule/time_series.csv.gz
@@ -38,7 +39,9 @@ scenario:
 ems:
   buffer_size: 24
   timezone: Europe/Berlin
-  steps: 2688               # numero di timestep per simulazione offline
+  steps: 2896               # numero di timestep simulati
+  start_step: 5840          # global index in full scenario_0 dataset
+  end_step: 8736            # exclusive, yields 2896 simulated steps
 
   price_bands:
     peak:
@@ -58,14 +61,27 @@ ems:
 
 mpc:
   mpc_horizon: 24
-  forecaster: oracle
+  forecaster: oracle  # current MPC implementation uses oracle forecasts
   solver: GUROBI
-  ramp_penalty: 0.0  # penalty for battery power ramping in the objective function
-  ramp_kw_per_h: 20.0  # maximum allowed battery ramp rate in kW per hour
   log_full_forecast: false
-  wear_segments: 0  # disabled with base pymgrid battery (no chemistry wear model)
-  wear_cost_scale: 1.0  # disabled with base pymgrid battery (no chemistry wear model)
-
-
-
+  # Ramp terms are kept for compatibility, but ramp constraints are currently disabled in mpc_MILP.py.
+  ramp_penalty: 0.0
+  ramp_kw_per_h: 20.0
+  # Penalize or forbid charging battery from grid.
+  grid_charge_penalty_per_kwh: 0.0
+  forbid_grid_charging: false
+  # Advanced chemistry wear is disabled with the base pymgrid BatteryModule.
+  wear_segments: 0
+  wear_cost_scale: 1.0
+  reward_coeffs:
+    energy: 1.0          # global multiplier of energy term
+    import: 1.0          # weight on import cost (+)
+    export: 1.0          # weight on export revenue (-)
+    loss_load: 10.0       # multiplier on loss-load penalty
+    overgeneration: 2.0  # multiplier on overgeneration penalty
+    ramp: 0.0            # multiplier on ramp penalty term
+    simple_wear: 1.0     # multiplier on battery_cost_cycle term
+    wear: 1.0            # multiplier on chemistry wear linearization term
+    grid_charge: 1.0     # multiplier on grid-charge penalty term
+    co2: 1.0             # multiplier on CO2 emission cost term
 

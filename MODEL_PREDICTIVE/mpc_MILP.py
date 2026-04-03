@@ -24,7 +24,9 @@ from SIMULATOR.tools import compute_offline_tariff_vectors
 # Data and config
 # -----------------------------
 def load_config(config_path: str | Path) -> dict[str, Any]:
-    with open(config_path, "r") as cfg_file:
+    # Use utf-8-sig so optional BOM at file start does not pollute the first key
+    # (e.g. "\ufeffbattery" instead of "battery").
+    with open(config_path, "r", encoding="utf-8-sig") as cfg_file:
         return yaml.safe_load(cfg_file)
 
 
@@ -106,6 +108,8 @@ def load_time_series(
         keep_columns.append("price_buy")
     if "price_sell" in time_series.columns:
         keep_columns.append("price_sell")
+    if "co2" in time_series.columns:
+        keep_columns.append("co2")
     time_series = time_series[keep_columns].copy()
 
     numeric_block = time_series[["solar", "load"]].apply(pd.to_numeric, errors="coerce")
@@ -142,6 +146,15 @@ def load_time_series(
     pv_series = pv_series_kwh / sample_time  # kW
     load_series = load_series_kwh / sample_time  # kW
 
+    if "co2" in window.columns:
+        co2_series = pd.to_numeric(window["co2"], errors="coerce").to_numpy(dtype=float)
+        if np.isnan(co2_series).any():
+            co2_series = pd.Series(co2_series).interpolate(limit_direction="both").to_numpy(dtype=float)
+        if np.isnan(co2_series).any():
+            raise ValueError("Dataset MPC contiene valori co2 non numerici/non interpolabili.")
+    else:
+        co2_series = np.zeros(len(window), dtype=float)
+
     if {"price_buy", "price_sell"}.issubset(window.columns):
         # Prefer dataset prices when available (scenario bundle-aligned mode).
         price_buy = pd.to_numeric(window["price_buy"], errors="coerce").to_numpy(dtype=float)
@@ -174,6 +187,7 @@ def load_time_series(
         "timestamps": timestamps,
         "pv_series_kwh": pv_series_kwh,
         "load_series_kwh": load_series_kwh,
+        "co2_series": co2_series,
     }
 
 
@@ -201,6 +215,10 @@ def forecast_price_buy(series: np.ndarray, t0: int, horizon: int) -> np.ndarray:
 
 
 def forecast_price_sell(series: np.ndarray, t0: int, horizon: int) -> np.ndarray:
+    return _forecast_series(series, t0, horizon)
+
+
+def forecast_co2(series: np.ndarray, t0: int, horizon: int) -> np.ndarray:
     return _forecast_series(series, t0, horizon)
 
 
@@ -328,10 +346,14 @@ def build_mpc_problem(
     efficiency: float,
     loss_load_cost: float,
     overgeneration_cost: float,
+    co2_cost_per_unit: float = 0.0,
     simple_battery_cost_cycle: float = 0.0,
     ramp_penalty: float = 0.0,
     ramp_kw_per_h: float = 20.0,
     wear_linearization: dict[str, Any] | None = None,
+    reward_coeffs: dict[str, float] | None = None,
+    grid_charge_penalty_per_kwh: float = 0.0,
+    forbid_grid_charging: bool = False,
     ):
     
     # Parameters
@@ -339,6 +361,8 @@ def build_mpc_problem(
     price_sell = cp.Parameter((1, N))
     load = cp.Parameter((1, N))
     pv = cp.Parameter((1, N))
+    co2_intensity = cp.Parameter((1, N), nonneg=True)
+    pv_surplus = cp.Parameter((1, N), nonneg=True)
     SoE_0 = cp.Parameter((1, 1))
     p_in_prev = cp.Parameter((1, 1))
     p_out_prev = cp.Parameter((1, 1))
@@ -352,6 +376,8 @@ def build_mpc_problem(
     e_max.value = np.full((1, N + 1), charge_min_max[1], dtype=float)
     p_charge_max.value = np.full((1, N), storage_power_min_max[1], dtype=float)
     p_discharge_max.value = np.full((1, N), storage_power_min_max[1], dtype=float)
+    pv_surplus.value = np.zeros((1, N), dtype=float)
+    co2_intensity.value = np.zeros((1, N), dtype=float)
 
     # Decision variables
     SoE = cp.Variable((1, N + 1))
@@ -368,6 +394,7 @@ def build_mpc_problem(
 
     ramp_slack_in = cp.Variable((1, N), nonneg=True)
     ramp_slack_out = cp.Variable((1, N), nonneg=True)
+    grid_charge_from_grid = cp.Variable((1, N), nonneg=True)
 
     wear = None
     if wear_linearization is not None:
@@ -381,16 +408,40 @@ def build_mpc_problem(
     dt = sample_time
     M_grid = max(abs(grid_power_min_max[0]), grid_power_min_max[1]) * dt
 
+    default_coeffs = {
+        "energy": 1.0,
+        "import": 1.0,
+        "export": 1.0,
+        "loss_load": 1.0,
+        "overgeneration": 1.0,
+        "ramp": 1.0,
+        "simple_wear": 1.0,
+        "wear": 1.0,
+        "grid_charge": 1.0,
+        "co2": 1.0,
+    }
+    coeffs = dict(default_coeffs)
+    if reward_coeffs:
+        for key, default_val in default_coeffs.items():
+            coeffs[key] = max(0.0, float(reward_coeffs.get(key, default_val)))
+
     ramp_penalty = max(0.0, float(ramp_penalty))
+    grid_charge_penalty_per_kwh = max(0.0, float(grid_charge_penalty_per_kwh))
+    co2_cost_per_unit = max(0.0, float(co2_cost_per_unit))
     eff_safe = max(float(efficiency), 1e-6)
-    simple_wear_coeff = max(0.0, float(simple_battery_cost_cycle))
-    ene_cost = cp.multiply(price_buy, E_imp) - cp.multiply(price_sell, E_exp)
-    imbalance_cost = loss_load_cost * cp.sum(loss_load) * dt
-    imbalance_cost += overgeneration_cost * cp.sum(overgeneration) * dt
-    ramp_cost = ramp_penalty * cp.sum(ramp_slack_in + ramp_slack_out) * dt
+    simple_wear_coeff = max(0.0, float(simple_battery_cost_cycle)) * coeffs["simple_wear"]
+    ene_cost = coeffs["energy"] * (
+        coeffs["import"] * cp.multiply(price_buy, E_imp)
+        - coeffs["export"] * cp.multiply(price_sell, E_exp)
+    )
+    imbalance_cost = coeffs["loss_load"] * loss_load_cost * cp.sum(loss_load) * dt
+    imbalance_cost += coeffs["overgeneration"] * overgeneration_cost * cp.sum(overgeneration) * dt
+    ramp_cost = coeffs["ramp"] * ramp_penalty * cp.sum(ramp_slack_in + ramp_slack_out) * dt
     # Base BatteryModule wear cost: cost_cycle * internal_energy_throughput.
     simple_wear_cost = simple_wear_coeff * dt * cp.sum(eff_safe * Ps_in + (1.0 / eff_safe) * Ps_out)
-    objective_expr = cp.sum(ene_cost) + imbalance_cost + ramp_cost + simple_wear_cost
+    grid_charge_cost = coeffs["grid_charge"] * grid_charge_penalty_per_kwh * dt * cp.sum(grid_charge_from_grid)
+    co2_cost = coeffs["co2"] * co2_cost_per_unit * cp.sum(cp.multiply(co2_intensity, E_imp))
+    objective_expr = cp.sum(ene_cost) + imbalance_cost + ramp_cost + simple_wear_cost + grid_charge_cost + co2_cost
 
     # Constraints
     constraints = [SoE[:, 0] == SoE_0]
@@ -424,7 +475,12 @@ def build_mpc_problem(
             Ps_out[:, k] <= p_discharge_max[:, k],
             Ps_in[:, k] <= cp.multiply(u[:, k], p_charge_max[:, k]), 
             Ps_out[:, k] <= cp.multiply(1 - u[:, k], p_discharge_max[:, k]),
+            grid_charge_from_grid[:, k] >= Ps_in[:, k] - pv_surplus[:, k],
+            grid_charge_from_grid[:, k] <= Ps_in[:, k],
         ]
+
+        if forbid_grid_charging:
+            constraints += [Ps_in[:, k] <= pv_surplus[:, k]]
 
         net_balance = pv[:, k] - load[:, k] - Ps_in[:, k] + Ps_out[:, k]  # net power balance at grid connection point
         P_grid_k = net_balance + loss_load[:, k] - overgeneration[:, k]  # grid power including losses and overgeneration
@@ -475,14 +531,15 @@ def build_mpc_problem(
                 wear_delta[:, k] >= -(wear_phi[:, k + 1] - wear_phi[:, k]),
             ]
 
-        wear_cost = float(wear_linearization["coeff"]) * cp.sum(wear_delta)
+        wear_coeff = coeffs["wear"] * float(wear_linearization["coeff"])
+        wear_cost = wear_coeff * cp.sum(wear_delta)
         objective_expr += wear_cost
         wear = {
             "inv_capacity": inv_capacity,
             "delta_phi": wear_delta,
             "phi": wear_phi,
             "segments": wear_seg,
-            "coeff": float(wear_linearization["coeff"]),
+            "coeff": wear_coeff,
             "cost_expr": wear_cost,
         }
 
@@ -494,6 +551,8 @@ def build_mpc_problem(
         price_sell,
         load,
         pv,
+        co2_intensity,
+        pv_surplus,
         SoE_0,
         p_in_prev,
         p_out_prev,
@@ -502,12 +561,16 @@ def build_mpc_problem(
         p_charge_max,
         p_discharge_max,
     )
-    variables = (Ps_in, Ps_out, SoE, u, E_imp, E_exp, loss_load, overgeneration)
+    variables = (Ps_in, Ps_out, SoE, u, E_imp, E_exp, loss_load, overgeneration, grid_charge_from_grid)
     simple_wear = {
         "coeff": simple_wear_coeff,
         "cost_expr": simple_wear_cost,
     }
-    return prob, params, variables, wear, simple_wear
+    co2_term = {
+        "coeff": coeffs["co2"] * co2_cost_per_unit,
+        "cost_expr": co2_cost,
+    }
+    return prob, params, variables, wear, simple_wear, co2_term, coeffs
 
 
 # -----------------------------
@@ -537,12 +600,23 @@ class MPCController:
             self.loss_load_cost = 10.0
             self.overgeneration_cost = 2.0
 
+        grid_list = self.microgrid.modules.get("grid")
+        grid_module = grid_list[0] if grid_list else None
+
         # Load config
         cfg = load_config(config_path)
         battery_cfg = cfg["battery"]
         grid_cfg = cfg["grid"]
         mpc_cfg = cfg["mpc"]
         ems_cfg = cfg["ems"]
+        scenario_cfg = cfg.get("scenario", {})
+
+        self.cost_per_unit_co2 = max(
+            0.0,
+            float(
+                getattr(grid_module, "cost_per_unit_co2", scenario_cfg.get("grid_cost_per_unit_co2", 0.0)) or 0.0
+            ),
+        )
 
         # Battery params
         self.capacity = battery_cfg["capacity"]
@@ -581,6 +655,21 @@ class MPCController:
         self.price_bands = ems_cfg["price_bands"]
         self.ramp_penalty = float(mpc_cfg.get("ramp_penalty", 0.0))
         self.ramp_kw_per_h = float(mpc_cfg.get("ramp_kw_per_h", 20.0))
+        self.grid_charge_penalty_per_kwh = max(0.0, float(mpc_cfg.get("grid_charge_penalty_per_kwh", 0.0)))
+        self.forbid_grid_charging = bool(mpc_cfg.get("forbid_grid_charging", False))
+        reward_coeffs_cfg = mpc_cfg.get("reward_coeffs", {}) or {}
+        self.reward_coeffs = {
+            "energy": max(0.0, float(reward_coeffs_cfg.get("energy", 1.0))),
+            "import": max(0.0, float(reward_coeffs_cfg.get("import", 1.0))),
+            "export": max(0.0, float(reward_coeffs_cfg.get("export", 1.0))),
+            "loss_load": max(0.0, float(reward_coeffs_cfg.get("loss_load", 1.0))),
+            "overgeneration": max(0.0, float(reward_coeffs_cfg.get("overgeneration", 1.0))),
+            "ramp": max(0.0, float(reward_coeffs_cfg.get("ramp", 1.0))),
+            "simple_wear": max(0.0, float(reward_coeffs_cfg.get("simple_wear", 1.0))),
+            "wear": max(0.0, float(reward_coeffs_cfg.get("wear", 1.0))),
+            "grid_charge": max(0.0, float(reward_coeffs_cfg.get("grid_charge", 1.0))),
+            "co2": max(0.0, float(reward_coeffs_cfg.get("co2", 1.0))),
+        }
         solver_name = solver if solver is not None else mpc_cfg.get("solver", "GUROBI")
         self._solver = self._resolve_solver(solver_name)
 
@@ -637,7 +726,7 @@ class MPCController:
             )
 
         # Build problem
-        self.prob, params, variables, wear, simple_wear = build_mpc_problem(
+        self.prob, params, variables, wear, simple_wear, co2_term, used_coeffs = build_mpc_problem(
             A=A,
             B=B,
             N=self.horizon,
@@ -649,12 +738,18 @@ class MPCController:
             simple_battery_cost_cycle=self.simple_battery_cost_cycle,
             loss_load_cost=self.loss_load_cost,
             overgeneration_cost=self.overgeneration_cost,
+            co2_cost_per_unit=self.cost_per_unit_co2,
             ramp_penalty=self.ramp_penalty,
             ramp_kw_per_h=self.ramp_kw_per_h,
             wear_linearization=wear_linearization,
+            reward_coeffs=self.reward_coeffs,
+            grid_charge_penalty_per_kwh=self.grid_charge_penalty_per_kwh,
+            forbid_grid_charging=self.forbid_grid_charging,
         )
+        self.reward_coeffs = used_coeffs
         self.wear = wear
         self.simple_wear = simple_wear
+        self.co2_term = co2_term
         self.inv_capacity_p = wear["inv_capacity"] if wear is not None else None
 
         (
@@ -662,6 +757,8 @@ class MPCController:
             self.price_sell_p,
             self.load_p,
             self.pv_p,
+            self.co2_p,
+            self.pv_surplus_p,
             self.SoE_p,
             self.p_in_prev_p,
             self.p_out_prev_p,
@@ -680,6 +777,7 @@ class MPCController:
             self.E_exp,
             self.loss_load,
             self.overgeneration,
+            self.grid_charge_from_grid,
         ) = variables
 
         # State
@@ -711,6 +809,7 @@ class MPCController:
         self.load_series = ts["load_series"]
         self.price_buy = ts["price_buy"]
         self.price_sell = ts["price_sell"]
+        self.co2_series = ts["co2_series"]
         self.timestamps = ts["timestamps"]
 
     def get_action(self, verbose: int = 0) -> dict[str, float]:
@@ -750,9 +849,12 @@ class MPCController:
         pv_hat = forecast_pv(self.pv_series, self.current_step, self.horizon)
         price_buy_hat = forecast_price_buy(self.price_buy, self.current_step, self.horizon)
         price_sell_hat = forecast_price_sell(self.price_sell, self.current_step, self.horizon)
+        co2_hat = forecast_co2(self.co2_series, self.current_step, self.horizon)
 
         self.load_p.value = load_hat
         self.pv_p.value = pv_hat
+        self.co2_p.value = co2_hat
+        self.pv_surplus_p.value = np.maximum(pv_hat - load_hat, 0.0)
         self.price_buy_p.value = price_buy_hat
         self.price_sell_p.value = price_sell_hat
 
@@ -857,6 +959,7 @@ class MPCController:
             "pv_hat_kw": float(pv_hat[0, 0]),
             "price_buy": float(price_buy_hat[0, 0]),
             "price_sell": float(price_sell_hat[0, 0]),
+            "co2_per_kwh": float(self.co2_p.value[0, 0]),
             # solver outputs
             "E_imp_kwh": float(self.E_imp.value[0, 0]),
             "E_exp_kwh": float(self.E_exp.value[0, 0]),
@@ -864,6 +967,19 @@ class MPCController:
             "overgeneration_kwh": float(self.overgeneration.value[0, 0]) * self.sample_time,
             "objective": float(self.prob.value) if self.prob.value is not None else np.nan,
             "status": self.prob.status,
+            "obj_coeff_energy": float(self.reward_coeffs["energy"]),
+            "obj_coeff_import": float(self.reward_coeffs["import"]),
+            "obj_coeff_export": float(self.reward_coeffs["export"]),
+            "obj_coeff_loss_load": float(self.reward_coeffs["loss_load"]),
+            "obj_coeff_overgeneration": float(self.reward_coeffs["overgeneration"]),
+            "obj_coeff_ramp": float(self.reward_coeffs["ramp"]),
+            "obj_coeff_simple_wear": float(self.reward_coeffs["simple_wear"]),
+            "obj_coeff_wear": float(self.reward_coeffs["wear"]),
+            "obj_coeff_grid_charge": float(self.reward_coeffs["grid_charge"]),
+            "obj_coeff_co2": float(self.reward_coeffs["co2"]),
+            "grid_charge_penalty_per_kwh": float(self.grid_charge_penalty_per_kwh),
+            "co2_cost_per_unit": float(self.cost_per_unit_co2),
+            "forbid_grid_charging": int(bool(self.forbid_grid_charging)),
         }
         simple_wear_cost_horizon = np.nan
         if self.simple_wear["cost_expr"].value is not None:
@@ -878,6 +994,32 @@ class MPCController:
         record["wear_throughput_simple_step_kwh"] = simple_wear_throughput_step
         record["wear_cost_simple_step"] = simple_wear_cost_step
         record["wear_cost_simple_horizon"] = simple_wear_cost_horizon
+
+        grid_charge_kw = float(self.grid_charge_from_grid.value[0, 0])
+        grid_charge_cost_step = float(
+            self.reward_coeffs["grid_charge"]
+            * self.grid_charge_penalty_per_kwh
+            * self.sample_time
+            * grid_charge_kw
+        )
+        grid_charge_cost_horizon = np.nan
+        if self.grid_charge_from_grid.value is not None:
+            grid_charge_cost_horizon = float(
+                self.reward_coeffs["grid_charge"]
+                * self.grid_charge_penalty_per_kwh
+                * self.sample_time
+                * np.sum(self.grid_charge_from_grid.value)
+            )
+        record["grid_charge_from_grid_kw"] = grid_charge_kw
+        record["grid_charge_cost_step"] = grid_charge_cost_step
+        record["grid_charge_cost_horizon"] = grid_charge_cost_horizon
+
+        co2_cost_horizon = np.nan
+        if self.co2_term["cost_expr"].value is not None:
+            co2_cost_horizon = float(self.co2_term["cost_expr"].value)
+        co2_cost_step = float(self.co2_term["coeff"] * self.co2_p.value[0, 0] * self.E_imp.value[0, 0])
+        record["co2_cost_step"] = co2_cost_step
+        record["co2_cost_horizon"] = co2_cost_horizon
 
         if self.wear is not None:
             wear_cost_horizon = np.nan

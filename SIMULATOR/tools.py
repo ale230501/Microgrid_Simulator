@@ -95,6 +95,7 @@ def load_pymgrid_scenario_bundle(
         start_ts = start_ts.tz_localize("UTC")
     else:
         start_ts = start_ts.tz_convert("UTC")
+    start_ts = start_ts + pd.to_timedelta(start_step, unit="h")
     timestamps = pd.date_range(start=start_ts, periods=end_step - start_step, freq="h", tz="UTC")
 
     time_series = pd.DataFrame(
@@ -123,7 +124,7 @@ def load_pymgrid_scenario_bundle(
 
 def get_online_grid_prices(timestamp: datetime, price_config: dict):
     """Determina la fascia oraria del timestamp e restituisce il vettore prezzi associato."""
-    hour = timestamp.hour  # Confrontiamo solo l'ora perché le fasce sono espresse in intervalli orari.
+    hour = timestamp.hour  # Confrontiamo solo l'ora perchÃ© le fasce sono espresse in intervalli orari.
 
     def hour_in_ranges(hr, ranges):
         """True se l'ora `hr` rientra in uno dei range dichiarati per la fascia (peak o standard), altrimenti False."""
@@ -133,7 +134,7 @@ def get_online_grid_prices(timestamp: datetime, price_config: dict):
                 return True
         return False
 
-    # Ricerca prioritaria: prima le fasce più costose (peak) poi quelle standard.
+    # Ricerca prioritaria: prima le fasce piÃ¹ costose (peak) poi quelle standard.
     for band_key in ('peak', 'standard'):
         band_cfg = price_config.get(band_key)
         if band_cfg and hour_in_ranges(hour, band_cfg.get('ranges')):
@@ -155,7 +156,7 @@ def get_online_grid_prices(timestamp: datetime, price_config: dict):
 def init_live_battery_display(initial_soc_pct, timestamp):
     """Crea la finestra matplotlib con l'icona della batteria aggiornata ad ogni step."""
     try:
-        plt.ion()  # Modalità interattiva per aggiornare il disegno senza bloccare l'esecuzione.
+        plt.ion()  # ModalitÃ  interattiva per aggiornare il disegno senza bloccare l'esecuzione.
         fig, ax = plt.subplots(figsize=(3, 5))
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.3)
@@ -223,7 +224,7 @@ def load_config(path=None):
     if not ems_cfg:
         raise KeyError(f"Sezione 'ems' mancante in {path}")
 
-    # Verifica presenza chiavi richieste per evitare errori silenziosi più avanti.
+    # Verifica presenza chiavi richieste per evitare errori silenziosi piÃ¹ avanti.
     required_keys = ('buffer_size', 'timezone', 'steps', 'price_bands')
     missing_keys = [key for key in required_keys if key not in ems_cfg]
     if missing_keys:
@@ -318,10 +319,10 @@ def print_final_report(
 ):
     """
     Stampa un resoconto finale riassumendo energia, batteria ed economia a partire dal microgrid_df finale.
-    Se il DataFrame è vuoto o None viene emesso un avviso e la funzione termina silenziosamente.
+    Se il DataFrame Ã¨ vuoto o None viene emesso un avviso e la funzione termina silenziosamente.
     """
     if microgrid_df is None or microgrid_df.empty:
-        print("[WARN] impossibile generare il resoconto finale: microgrid_df è vuoto.")
+        print("[WARN] impossibile generare il resoconto finale: microgrid_df Ã¨ vuoto.")
         return
 
     df = microgrid_df.copy()
@@ -443,6 +444,13 @@ def print_final_report(
     grid_reward_total = sum_series(('grid', 0, 'reward'))
     balance_reward_total = sum_series(('balance', 0, 'reward'))
 
+    co2_cost = None
+    if grid_reward_total is not None and cost_import is not None:
+        net_energy_cost = cost_import - (revenue_export if revenue_export is not None else 0.0)
+        co2_cost = (-grid_reward_total) - net_energy_cost
+        if abs(co2_cost) < 1e-9:
+            co2_cost = 0.0
+
     line = "=" * 110
     print(f"\n{line}\nRESOCONTO FINALE MICROGRID\n{line}")
     if control_strategy:
@@ -479,6 +487,7 @@ def print_final_report(
     print("\nEconomia")
     print(f"  Costo energia import     : {fmt_value(cost_import, 'EUR', digits=2)}")
     print(f"  Ricavo export            : {fmt_value(revenue_export, 'EUR', digits=2)}")
+    print(f"  Costo CO2                : {fmt_value(co2_cost, 'EUR', digits=2)}")
     print(f"  Usura batteria (stimata) : {fmt_value(battery_wear_cost, 'EUR', digits=2)}")
     print(f"  Reward grid module       : {fmt_value(grid_reward_total, 'EUR', digits=2)}")
     print(f"  Reward complessivo       : {fmt_value(balance_reward_total, 'EUR', digits=2)}")
@@ -769,19 +778,19 @@ def compute_offline_tariff_vectors(ts_series, local_timezone, price_config):
         if 'ranges' in band_data and band_data['ranges'] is not None:
             band_conditions = None
 
-            # Ogni range è [start_hour, end_hour]
+            # Ogni range Ã¨ [start_hour, end_hour]
             for start, end in band_data['ranges']:
-                # Se l’utente usa in YAML range inclusivi (es. 18–20)
-                # li interpretiamo come ore intere: start ≤ hr ≤ end
+                # Se lâ€™utente usa in YAML range inclusivi (es. 18â€“20)
+                # li interpretiamo come ore intere: start â‰¤ hr â‰¤ end
                 condition = hr.between(start, end)
                 band_conditions = condition if band_conditions is None else (band_conditions | condition)
 
             condlist.append(band_conditions)
 
         else:
-            # Bande senza ranges → si assume valida per tutte le ore non coperte da altre fasce
+            # Bande senza ranges â†’ si assume valida per tutte le ore non coperte da altre fasce
             # Per evitare comportamenti non deterministici, creiamo una condizione placeholder;
-            # verrà assegnata *solo se nessuna delle fasce precedenti è valida* dopo np.select.
+            # verrÃ  assegnata *solo se nessuna delle fasce precedenti Ã¨ valida* dopo np.select.
             condlist.append(np.full(len(hr), True, dtype=bool))
 
         buy_choices.append(buy_val)
@@ -799,10 +808,10 @@ def add_module_columns(df, mapping):
     Aggiunge colonne extra al DataFrame preservandone la MultiIndex e l'ordine dei moduli.
 
     I nuovi campi vengono raggruppati accanto alle colonne del relativo modulo,
-    così l'ispezione resta ordinata anche dopo l'aggiunta di grandezze derivate.
+    cosÃ¬ l'ispezione resta ordinata anche dopo l'aggiunta di grandezze derivate.
     Se una serie ha lunghezza diversa dal DataFrame:
-    - viene troncata se più lunga;
-    - viene completata con NaN/NaT se più corta (incluso il caso vuoto).
+    - viene troncata se piÃ¹ lunga;
+    - viene completata con NaN/NaT se piÃ¹ corta (incluso il caso vuoto).
     """
     def _align_values(values, target_len):
         arr = np.asarray(values)
@@ -855,3 +864,100 @@ def add_module_columns(df, mapping):
 
     df = df.loc[:, ordered_cols]
     return df
+
+def _first_numeric_series(df: pd.DataFrame, candidates: list):
+    for col in candidates:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce")
+    return None
+
+
+def add_grid_cost_breakdown_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add per-step grid economic breakdown columns to the simulation DataFrame.
+
+    Added columns:
+    - grid import energy cost (EUR/step)
+    - grid export revenue (EUR/step)
+    - inferred CO2 cost (EUR/step), consistent with grid reward decomposition
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    grid_import = _first_numeric_series(
+        df,
+        [
+            ("grid", 0, "grid_import"),
+            "grid_import",
+            "grid_0_grid_import",
+        ],
+    )
+    grid_export = _first_numeric_series(
+        df,
+        [
+            ("grid", 0, "grid_export"),
+            "grid_export",
+            "grid_0_grid_export",
+        ],
+    )
+    price_buy = _first_numeric_series(
+        df,
+        [
+            ("price", 0, "price_buy"),
+            ("grid", 0, "import_price_current"),
+            ("grid", 0, "import_price"),
+            "price_buy",
+            "grid_0_import_price_current",
+            "grid_0_import_price",
+        ],
+    )
+    price_sell = _first_numeric_series(
+        df,
+        [
+            ("price", 0, "price_sell"),
+            ("grid", 0, "export_price_current"),
+            ("grid", 0, "export_price"),
+            "price_sell",
+            "grid_0_export_price_current",
+            "grid_0_export_price",
+        ],
+    )
+    grid_reward = _first_numeric_series(
+        df,
+        [
+            ("grid", 0, "reward"),
+            "grid_reward",
+            "grid_0_reward",
+        ],
+    )
+
+    if grid_import is None or price_buy is None:
+        return df
+
+    n = len(df)
+    zeros = np.zeros(n, dtype=float)
+    import_cost = grid_import.fillna(0.0).to_numpy(dtype=float) * price_buy.fillna(0.0).to_numpy(dtype=float)
+
+    if grid_export is not None and price_sell is not None:
+        export_revenue = grid_export.fillna(0.0).to_numpy(dtype=float) * price_sell.fillna(0.0).to_numpy(dtype=float)
+    else:
+        export_revenue = zeros.copy()
+
+    mapping = {}
+    if isinstance(df.columns, pd.MultiIndex):
+        mapping[("grid", 0, "cost_import_eur")] = import_cost
+        mapping[("grid", 0, "revenue_export_eur")] = export_revenue
+    else:
+        mapping["grid_cost_import_eur"] = import_cost
+        mapping["grid_revenue_export_eur"] = export_revenue
+
+    if grid_reward is not None:
+        co2_cost = -grid_reward.fillna(0.0).to_numpy(dtype=float) - (import_cost - export_revenue)
+        co2_cost[np.abs(co2_cost) < 1e-12] = 0.0
+        if isinstance(df.columns, pd.MultiIndex):
+            mapping[("grid", 0, "co2_cost_eur")] = co2_cost
+        else:
+            mapping["grid_co2_cost_eur"] = co2_cost
+
+    return add_module_columns(df, mapping)
+

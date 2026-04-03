@@ -142,7 +142,7 @@ rl:
 ### Reward Parameters
 
   reward:
-    mode: pymgrid  # use native reward returned by microgrid.step (pymgrid modules)
+    mode: custom  # use native reward returned by microgrid.step (pymgrid modules)
     coeff_economic: 1.0
     coeff_soc_violation: 1.0
     coeff_action_violation: 1.0
