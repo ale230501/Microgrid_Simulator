@@ -102,7 +102,7 @@ rl:
 
 ### Observation and Forecast Parameters
 
-  num_forecast: 23          # allineato al forecast_horizon oracle dello scenario
+  num_forecast: 24          # allineato al forecast_horizon oracle dello scenario
   include_time_feature: true
   forecast_price: true      # abilita prezzi futuri
   forecast_future: true      # abilita load e pv futuri (scenatrio_0 oracle)
@@ -176,7 +176,7 @@ rl:
   algorithm: PPO
   ppo:
     learning_rate: 3.0e-4
-    n_steps: 50000
+    n_steps: 3125
     batch_size: 50000
     n_epochs: 100
     gamma: 0.99

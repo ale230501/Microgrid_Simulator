@@ -801,6 +801,126 @@ def _run_episode(
         _write_action_log_csv(Path(action_log_path), action_log_rows)
     return total_reward, overshoots_end
 
+def _merge_running_stats_payloads(rms_payloads: list[dict], label: str) -> Optional[dict]:
+    merged_mean = None
+    merged_var = None
+    merged_count = 0.0
+
+    for idx, payload in enumerate(rms_payloads):
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("mean") is None or payload.get("var") is None:
+            continue
+
+        mean = np.asarray(payload.get("mean"), dtype=np.float64)
+        var = np.asarray(payload.get("var"), dtype=np.float64)
+        count = float(payload.get("count", 0.0))
+        if count <= 0.0:
+            continue
+
+        if merged_mean is None:
+            merged_mean = mean
+            merged_var = var
+            merged_count = count
+            continue
+
+        if mean.shape != merged_mean.shape or var.shape != merged_var.shape:
+            raise ValueError(
+                f"Inconsistent normalization shape for {label} at worker {idx}: "
+                f"got mean={mean.shape}, var={var.shape}, expected mean={merged_mean.shape}, var={merged_var.shape}."
+            )
+
+        delta = mean - merged_mean
+        tot_count = merged_count + count
+        if tot_count <= 0.0:
+            continue
+        new_mean = merged_mean + delta * count / tot_count
+        m_a = merged_var * merged_count
+        m_b = var * count
+        m_2 = m_a + m_b + np.square(delta) * merged_count * count / tot_count
+        new_var = m_2 / tot_count
+
+        merged_mean = new_mean
+        merged_var = new_var
+        merged_count = tot_count
+
+    if merged_mean is None or merged_var is None or merged_count <= 0.0:
+        return None
+
+    return {
+        "mean": merged_mean.tolist(),
+        "var": merged_var.tolist(),
+        "count": float(merged_count),
+    }
+
+
+def _merge_normalization_payloads(payloads: list[dict]) -> dict:
+    merged = {"version": 1}
+
+    obs_payloads = [
+        payload.get("obs")
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("obs") is not None
+    ]
+    obs_dims = [
+        int(payload.get("obs_dim"))
+        for payload in payloads
+        if isinstance(payload, dict)
+        and payload.get("obs") is not None
+        and payload.get("obs_dim") is not None
+    ]
+    if obs_dims and any(dim != obs_dims[0] for dim in obs_dims):
+        raise ValueError(f"Inconsistent obs_dim across workers: {obs_dims}")
+    merged_obs = _merge_running_stats_payloads(obs_payloads, label="obs")
+    if merged_obs is not None:
+        merged["obs"] = merged_obs
+        if obs_dims:
+            merged["obs_dim"] = int(obs_dims[0])
+
+    reward_payloads = [
+        payload.get("reward")
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("reward") is not None
+    ]
+    merged_reward = _merge_running_stats_payloads(reward_payloads, label="reward")
+    if merged_reward is not None:
+        merged["reward"] = merged_reward
+
+    return merged
+
+
+def _save_vec_env_normalization_state(vec_env, stats_path: Path) -> None:
+    stats_path = Path(stats_path)
+    payloads = []
+
+    if hasattr(vec_env, "env_method"):
+        try:
+            payloads = vec_env.env_method("export_normalization_state")
+        except Exception as exc:
+            print(f"[WARN] Failed to collect normalization states via env_method: {exc}. Falling back to worker 0.")
+            payloads = []
+
+    if not payloads and hasattr(vec_env, "envs"):
+        for env in vec_env.envs:
+            if hasattr(env, "export_normalization_state"):
+                payloads.append(env.export_normalization_state())
+
+    if not payloads:
+        if hasattr(vec_env, "env_method"):
+            vec_env.env_method("save_normalization_state", str(stats_path), indices=0)
+        else:
+            vec_env.envs[0].save_normalization_state(stats_path)
+        print("[WARN] Saved normalization statistics from worker 0 only (aggregation unavailable).")
+        return
+
+    merged_payload = _merge_normalization_payloads(payloads)
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with stats_path.open("w", encoding="utf-8") as handle:
+        json.dump(merged_payload, handle, indent=2)
+
+    num_workers = len(payloads)
+    if num_workers > 1:
+        print(f"[INFO] Saved aggregated normalization statistics from {num_workers} workers.")
 
 def train(config_path: str, config: dict, output_dir: Path, device: str, random_start: bool,
           start_step_default: Optional[int]):
@@ -817,43 +937,63 @@ def train(config_path: str, config: dict, output_dir: Path, device: str, random_
         random_start=random_start,
         start_step_default=start_step_default,
     )
-    model = agent.build_model(vec_env)
 
-    total_timesteps = int(config["rl"]["episode_steps"]) * int(config["rl"]["train_num_episodes"])
-    checkpoint_freq = int(config["rl"].get("checkpoint_freq", 10000))
-    checkpoint_cb = CheckpointCallback(save_freq=checkpoint_freq, save_path=str(checkpoint_dir), name_prefix="ppo")
-    episode_cb = EpisodePrintCallback()
-    diagnostics_cb = RewardDiagnosticsCallback(
-        log_path=output_dir / "reward_diagnostics.txt",
-        config=config,
-        section="train",
-    )
-    tb_callback = TensorboardTrainCallback(
-        log_dir=tensorboard_dir,
-        step_downsample=int(config["rl"].get("tb_step_downsample", 1)),
-        ma_window=int(config["rl"].get("tb_ma_window", 20)),
-        include_price=bool(config["rl"].get("include_price", False)),
-        reasoning_plot_every=int(config["rl"].get("tb_reasoning_plot_every", 10)),
-        price_bands=(config.get("ems", {}) or {}).get("price_bands"),
-        enable_figures=bool(config["rl"].get("tb_enable_figures", True)),
-        enable_histograms=bool(config["rl"].get("tb_enable_histograms", True)),
-    )
-    callback = CallbackList([checkpoint_cb, episode_cb, diagnostics_cb, tb_callback])
+    try:
+        model = agent.build_model(vec_env)
 
-    model.learn(total_timesteps=total_timesteps, callback=callback)
+        num_envs = int(getattr(vec_env, "num_envs", 1))
+        print(f"[INFO] RL vectorized env: type={type(vec_env).__name__} num_envs={num_envs}")
 
-    model_path = output_dir / "model_final"
-    model.save(str(model_path))
-    norm_cfg = (config.get("rl", {}) or {}).get("normalization", {}) or {}
-    norm_obs_enabled = bool((norm_cfg.get("observations", {}) or {}).get("enabled", False))
-    norm_reward_enabled = bool((norm_cfg.get("reward", {}) or {}).get("enabled", False))
-    save_stats = bool(norm_cfg.get("save_stats", False))
-    stats_path = norm_cfg.get("stats_path")
-    if save_stats and stats_path and (norm_obs_enabled or norm_reward_enabled):
-        env = vec_env.envs[0]
-        env.save_normalization_state(Path(stats_path))
-    return model_path
+        norm_cfg = (config.get("rl", {}) or {}).get("normalization", {}) or {}
+        norm_obs_enabled = bool((norm_cfg.get("observations", {}) or {}).get("enabled", False))
+        norm_reward_enabled = bool((norm_cfg.get("reward", {}) or {}).get("enabled", False))
+        if num_envs > 1 and (norm_obs_enabled or norm_reward_enabled):
+            print(
+                "[INFO] Observation/reward normalization is tracked per worker and merged at save-time "
+                "into a single normalization_state.json."
+            )
 
+        total_timesteps = int(config["rl"]["episode_steps"]) * int(config["rl"]["train_num_episodes"])
+        checkpoint_freq = int(config["rl"].get("checkpoint_freq", 10000))
+        checkpoint_save_freq = max(checkpoint_freq // max(num_envs, 1), 1)
+        if num_envs > 1 and checkpoint_save_freq != checkpoint_freq:
+            print(
+                f"[INFO] Checkpoint callback adjusted for vec env: requested_timesteps={checkpoint_freq} "
+                f"callback_calls={checkpoint_save_freq}"
+            )
+        checkpoint_cb = CheckpointCallback(save_freq=checkpoint_save_freq, save_path=str(checkpoint_dir), name_prefix="ppo")
+        episode_cb = EpisodePrintCallback()
+        diagnostics_cb = RewardDiagnosticsCallback(
+            log_path=output_dir / "reward_diagnostics.txt",
+            config=config,
+            section="train",
+        )
+        tb_callback = TensorboardTrainCallback(
+            log_dir=tensorboard_dir,
+            step_downsample=int(config["rl"].get("tb_step_downsample", 1)),
+            ma_window=int(config["rl"].get("tb_ma_window", 20)),
+            include_price=bool(config["rl"].get("include_price", False)),
+            reasoning_plot_every=int(config["rl"].get("tb_reasoning_plot_every", 10)),
+            price_bands=(config.get("ems", {}) or {}).get("price_bands"),
+            enable_figures=bool(config["rl"].get("tb_enable_figures", True)),
+            enable_histograms=bool(config["rl"].get("tb_enable_histograms", True)),
+        )
+        callback = CallbackList([checkpoint_cb, episode_cb, diagnostics_cb, tb_callback])
+
+        model.learn(total_timesteps=total_timesteps, callback=callback)
+
+        model_path = output_dir / "model_final"
+        model.save(str(model_path))
+        save_stats = bool(norm_cfg.get("save_stats", False))
+        stats_path = norm_cfg.get("stats_path")
+        if save_stats and stats_path and (norm_obs_enabled or norm_reward_enabled):
+            _save_vec_env_normalization_state(vec_env, Path(stats_path))
+        return model_path
+    finally:
+        try:
+            vec_env.close()
+        except Exception as exc:
+            print(f"[WARN] Failed to close vec_env cleanly: {exc}")
 
 def evaluate(config_path: str, config: dict, output_dir: Path, model_path: str, device: str,
              deterministic: bool, random_start: bool, plot: bool, start_step_default: Optional[int]):

@@ -1,7 +1,8 @@
-import json
+﻿import json
 import math
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 
@@ -12,7 +13,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 import torch.nn as nn
 import torch
 
@@ -155,6 +156,8 @@ def load_rl_agent_config(path: str) -> Dict[str, Any]:
 
     rl_cfg.setdefault("checkpoint_freq", 10000)
     rl_cfg.setdefault("num_envs", 1)
+    rl_cfg.setdefault("vec_env_type", "auto")
+    rl_cfg.setdefault("vec_env_start_method", None)
     rl_cfg.setdefault("observation_bounds_path", None)
     rl_cfg.setdefault("save_observation_bounds", None)
     obs_limits = rl_cfg.setdefault("observation_limits", {})
@@ -209,6 +212,38 @@ def _band_to_status(band_name: str, price_bands: Dict[str, Any]) -> str:
         return "min"
     return "mid"
 
+def _resolve_worker_seed(base_seed: Optional[int], worker_idx: int) -> Optional[int]:
+    if base_seed is None:
+        return None
+    return int(base_seed) + int(worker_idx)
+
+
+def _resolve_vec_env_type(rl_cfg: Dict[str, Any], num_envs: int) -> str:
+    raw = str(rl_cfg.get("vec_env_type", "auto")).strip().lower()
+    if raw not in {"auto", "dummy", "subproc"}:
+        raise ValueError(f"Unsupported rl.vec_env_type={raw!r}. Supported values: auto, dummy, subproc.")
+    if num_envs <= 1:
+        return "dummy"
+    return "subproc" if raw == "auto" else raw
+
+
+def _make_offline_env_factory(
+    config_path: str,
+    config: Dict[str, Any],
+    random_start: bool,
+    seed: Optional[int],
+    start_step_default: Optional[int],
+):
+    def _make_env():
+        return OfflineMicrogridRLEnv(
+            config_path=config_path,
+            config=deepcopy(config),
+            random_start=random_start,
+            seed=seed,
+            start_step_default=start_step_default,
+        )
+
+    return _make_env
 
 class OfflineMicrogridRLEnv(gym.Env):
     metadata = {"render.modes": []}
@@ -580,32 +615,28 @@ class OfflineMicrogridRLEnv(gym.Env):
             return float(action * self._action_max_discharge)
         return float(action * self._action_max_charge)
 
-    def save_normalization_state(self, path: Path) -> None:
+    def _build_normalization_payload(self) -> Dict[str, Any]:
         payload = {"version": 1}
         if self._obs_rms is not None:
             payload["obs_dim"] = int(self._get_obs_dim())
             payload["obs"] = self._obs_rms.to_dict()
         if self._reward_rms is not None:
             payload["reward"] = self._reward_rms.to_dict()
+        return payload
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-
-    def load_normalization_state(self, path: Path) -> None:
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle) or {}
+    def _apply_normalization_payload(self, payload: Dict[str, Any], source: str = "payload") -> None:
+        payload = payload or {}
 
         if self._obs_rms is not None and payload.get("obs") is not None:
             obs_dim = payload.get("obs_dim")
             if obs_dim is not None and int(obs_dim) != int(self._get_obs_dim()):
                 raise ValueError(
-                    f"Normalization stats in {path} have obs_dim={obs_dim}, expected {self._get_obs_dim()}."
+                    f"Normalization stats in {source} have obs_dim={obs_dim}, expected {self._get_obs_dim()}."
                 )
             obs_rms = RunningMeanStd.from_dict(payload["obs"], epsilon=self._norm_epsilon)
             if obs_rms.mean.shape != self._obs_rms.mean.shape:
                 raise ValueError(
-                    f"Normalization stats in {path} have obs shape {obs_rms.mean.shape}, "
+                    f"Normalization stats in {source} have obs shape {obs_rms.mean.shape}, "
                     f"expected {self._obs_rms.mean.shape}."
                 )
             self._obs_rms = obs_rms
@@ -614,10 +645,30 @@ class OfflineMicrogridRLEnv(gym.Env):
             reward_rms = RunningMeanStd.from_dict(payload["reward"], epsilon=self._norm_epsilon)
             if reward_rms.mean.shape != self._reward_rms.mean.shape:
                 raise ValueError(
-                    f"Normalization stats in {path} have reward shape {reward_rms.mean.shape}, "
+                    f"Normalization stats in {source} have reward shape {reward_rms.mean.shape}, "
                     f"expected {self._reward_rms.mean.shape}."
                 )
             self._reward_rms = reward_rms
+
+    def export_normalization_state(self) -> Dict[str, Any]:
+        return self._build_normalization_payload()
+
+    def import_normalization_state(self, payload: Dict[str, Any]) -> None:
+        self._apply_normalization_payload(payload=payload, source="payload")
+
+    def save_normalization_state(self, path: Path) -> None:
+        path = Path(path)
+        payload = self._build_normalization_payload()
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+
+    def load_normalization_state(self, path: Path) -> None:
+        path = Path(path)
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+        self._apply_normalization_payload(payload=payload, source=str(path))
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None,
               random_start: Optional[bool] = None, start_step: Optional[int] = None):
@@ -1460,16 +1511,34 @@ class EMS_RL_Agent:
         action, _ = self.model.predict(observation, deterministic=deterministic)
         return action
 
-    def make_vec_env(self, config_path: str, random_start: bool, start_step_default: Optional[int] = None) -> DummyVecEnv:
-        def _make_env():
-            return OfflineMicrogridRLEnv(
+    def make_vec_env(self, config_path: str, random_start: bool, start_step_default: Optional[int] = None) -> VecEnv:
+        rl_cfg = self.config["rl"]
+        num_envs = max(1, int(rl_cfg.get("num_envs", 1)))
+        vec_env_type = _resolve_vec_env_type(rl_cfg, num_envs)
+        start_method = rl_cfg.get("vec_env_start_method")
+        if isinstance(start_method, str):
+            start_method = start_method.strip() or None
+
+        base_seed = rl_cfg.get("seed", None)
+        env_fns = [
+            _make_offline_env_factory(
                 config_path=config_path,
                 config=self.config,
                 random_start=random_start,
-                seed=self.config["rl"].get("seed", None),
+                seed=_resolve_worker_seed(base_seed, env_idx),
                 start_step_default=start_step_default,
             )
+            for env_idx in range(num_envs)
+        ]
 
-        return DummyVecEnv([_make_env])
+        if vec_env_type == "dummy":
+            return DummyVecEnv(env_fns)
+
+        subproc_kwargs = {}
+        if start_method is not None:
+            subproc_kwargs["start_method"] = str(start_method)
+
+        return SubprocVecEnv(env_fns, **subproc_kwargs)
+
 
 
