@@ -40,6 +40,11 @@ dell'azione RL in setpoint batteria e calcolo della reward composita.
   \texttt{rl.reward.mode: custom} usa la somma pesata dei termini RL;
   \texttt{rl.reward.mode: pymgrid} usa direttamente la \texttt{base\_reward}
   restituita da \texttt{microgrid.step}.
+\item Reward relativa opzionale:
+  con \texttt{rl.reward.relative\_reference\_enabled: true} il termine economico
+  viene sostituito dal delta rispetto a una policy di riferimento
+  (\texttt{no\_battery} oppure \texttt{rbc}), con normalizzazione opzionale
+  via \texttt{relative\_reference\_normalize}/\texttt{relative\_reference\_eps}.
 \item Il termine reward \texttt{soe\_violation} viene letto da \texttt{step\_info} se disponibile,
   con fallback locale su limiti SoE in assenza di campi dedicati.
 \item Il clipping dell'azione batteria combina limiti fisici modulo e finestra SoC
@@ -65,6 +70,8 @@ dell'azione RL in setpoint batteria e calcolo della reward composita.
 \item La reward finale usata dall'agente dipende da \texttt{rl.reward.mode}:
   in \texttt{custom} e' la somma pesata dei termini RL, in \texttt{pymgrid}
   coincide con la \texttt{base\_reward} del simulatore.
+\item Se la reward relativa e' attiva, il confronto col riferimento viene fatto
+  step-by-step e i campi \texttt{reference\_*} vengono esportati in \texttt{info}.
 \end{itemize}
 
 \subsection*{Dipendenze critiche}

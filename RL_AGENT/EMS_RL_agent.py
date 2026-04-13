@@ -104,14 +104,16 @@ def load_rl_agent_config(path: str) -> Dict[str, Any]:
     reward_cfg.setdefault("coeff_micro_throughput", 0.0)
     reward_cfg.setdefault("coeff_action_violation", 1.0)
     reward_cfg.setdefault("coeff_soe_boundary", reward_cfg.get("coeff_soc_boundary", 0.0))
-    reward_cfg.setdefault("coeff_bad_logic", 1.0)
     reward_cfg.setdefault("coeff_soh_calendar", 1.0)
     reward_cfg.setdefault("coeff_cyclic_aging", 1.0)
     reward_cfg.setdefault("coeff_wear_cost", 0.0)
     reward_cfg.setdefault("coeff_SSR", 0.0)
     reward_cfg.setdefault("sell_discount", 0.8)
-    reward_cfg.setdefault("bad_logic_discount", 0.9)
-    reward_cfg.setdefault("bad_logic_aging_weight", 0.1)
+    reward_cfg.setdefault("relative_reference_enabled", False)
+    reward_cfg.setdefault("relative_reference_policy", "no_battery")
+    reward_cfg.setdefault("relative_reference_normalize", True)
+    reward_cfg.setdefault("relative_reference_eps", 1e-6)
+    reward_cfg.setdefault("relative_reference_weight", 1.0)
     reward_cfg.setdefault("soe_tolerance", reward_cfg.get("soc_tolerance", 1e-6))
     reward_cfg.setdefault("action_tolerance", 1e-6)
     reward_cfg.setdefault("calendar_aging_per_step", 0.0)
@@ -177,40 +179,6 @@ def load_rl_agent_config(path: str) -> Dict[str, Any]:
 
     return config
 
-
-def _resolve_band(timestamp: pd.Timestamp, price_bands: Dict[str, Any]) -> str:
-    hour = int(timestamp.hour)
-    for band_name, band_cfg in price_bands.items():
-        ranges = band_cfg.get("ranges")
-        if not ranges:
-            continue
-        for start, end in ranges:
-            if start <= hour <= end:
-                return band_name
-    if "offpeak" in price_bands:
-        return "offpeak"
-    return next(iter(price_bands))
-
-
-def _band_to_status(band_name: str, price_bands: Dict[str, Any]) -> str:
-    lowered = (band_name or "").lower()
-    if "peak" in lowered or "max" in lowered:
-        return "max"
-    if "standard" in lowered or "mid" in lowered:
-        return "mid"
-    if "off" in lowered or "min" in lowered or "low" in lowered:
-        return "min"
-
-    prices = {name: float(cfg.get("buy", 0.0)) for name, cfg in price_bands.items()}
-    if not prices:
-        return "unknown"
-    min_band = min(prices, key=prices.get)
-    max_band = max(prices, key=prices.get)
-    if band_name == max_band:
-        return "max"
-    if band_name == min_band:
-        return "min"
-    return "mid"
 
 def _resolve_worker_seed(base_seed: Optional[int], worker_idx: int) -> Optional[int]:
     if base_seed is None:
@@ -789,6 +757,13 @@ class OfflineMicrogridRLEnv(gym.Env):
             "base",
             "module",
         }
+        relative_reference_enabled = bool(reward_cfg.get("relative_reference_enabled", False))
+        relative_reference_policy = str(reward_cfg.get("relative_reference_policy", "no_battery")).strip().lower()
+        relative_reference_normalize = bool(reward_cfg.get("relative_reference_normalize", True))
+        relative_reference_eps = float(reward_cfg.get("relative_reference_eps", 1e-6) or 1e-6)
+        relative_reference_weight = float(reward_cfg.get("relative_reference_weight", 1.0))
+        if relative_reference_eps <= 0.0:
+            relative_reference_eps = 1e-6
         sell_discount = float(reward_cfg.get("sell_discount", 0.8))
         cost_economic = grid_import * price_buy - grid_export * price_sell * sell_discount
         coeff_economic = float(reward_cfg.get("coeff_economic", 1.0))
@@ -798,7 +773,6 @@ class OfflineMicrogridRLEnv(gym.Env):
         coeff_action_sign_change = float(reward_cfg.get("coeff_action_sign_change", 0.0))
         coeff_micro_throughput = float(reward_cfg.get("coeff_micro_throughput", 0.0))
         coeff_soe_boundary = float(reward_cfg.get("coeff_soe_boundary", reward_cfg.get("coeff_soc_boundary", 0.0)))
-        coeff_bad_logic = float(reward_cfg.get("coeff_bad_logic", 1.0))
         coeff_cyclic_aging = float(reward_cfg.get("coeff_cyclic_aging", 1.0))
         coeff_soh_calendar = float(reward_cfg.get("coeff_soh_calendar", 1.0))
         coeff_wear_cost = float(reward_cfg.get("coeff_wear_cost", 0.0))
@@ -823,6 +797,8 @@ class OfflineMicrogridRLEnv(gym.Env):
             scale_micro_throughput = 1.0
         if scale_soe_boundary <= 0.0:
             scale_soe_boundary = 1.0
+        if scale_economic <= 0.0:
+            scale_economic = 1.0
         if scale_wear_cost <= 0.0:
             scale_wear_cost = 1.0
         if scale_ssr <= 0.0:
@@ -900,15 +876,6 @@ class OfflineMicrogridRLEnv(gym.Env):
         calendar_aging = max(0.0, 1.0 - current_soh)
         calendar_aging += float(reward_cfg.get("calendar_aging_per_step", 0.0))
 
-        bad_logic_penalty, bad_logic = self._compute_bad_logic_penalty(
-            step_idx=step_idx,
-            net_load=net_load,
-            p_batt=batt_actual,
-            soe=soe,
-            price_buy=price_buy,
-            price_sell=price_sell,
-        )
-
         ssr = self._self_sufficiency_ratio(load_kwh, pv_kwh, batt_actual)
 
         if scale_components:
@@ -928,6 +895,57 @@ class OfflineMicrogridRLEnv(gym.Env):
             wear_cost_for_reward = wear_cost
             ssr_for_reward = ssr
 
+        reference_battery_action = 0.0
+        reference_grid_action_requested = 0.0
+        reference_grid_action = 0.0
+        reference_grid_import = 0.0
+        reference_grid_export = 0.0
+        reference_cost_economic = 0.0
+        reference_reward_term_economic = 0.0
+        reward_term_reference = 0.0
+        reward_term_reference_delta_raw = 0.0
+        reward_term_reference_delta_scaled = 0.0
+        reward_term_reference_denom = 1.0
+        if relative_reference_enabled:
+            if relative_reference_policy == "no_battery":
+                reference_battery_action = 0.0
+            elif relative_reference_policy == "rbc":
+                max_discharge = max(
+                    0.0,
+                    min(
+                        float(getattr(self.battery_module, "max_discharge", 0.0) or 0.0),
+                        float(getattr(self.battery_module, "max_production", 0.0) or 0.0),
+                    ),
+                )
+                max_charge = max(
+                    0.0,
+                    min(
+                        float(getattr(self.battery_module, "max_charge", 0.0) or 0.0),
+                        float(getattr(self.battery_module, "max_consumption", 0.0) or 0.0),
+                    ),
+                )
+                if float(net_load) >= 0.0:
+                    reference_battery_action = min(float(net_load), max_discharge)
+                else:
+                    reference_battery_action = -min(-float(net_load), max_charge)
+            else:
+                raise ValueError(
+                    f"Unsupported rl.reward.relative_reference_policy={relative_reference_policy!r}. "
+                    "Supported values: no_battery, rbc."
+                )
+
+            reference_grid_action_requested = float(net_load) - reference_battery_action
+            reference_grid_action, _ = self._clip_grid_action(reference_grid_action_requested)
+            reference_grid_import = max(reference_grid_action, 0.0)
+            reference_grid_export = max(-reference_grid_action, 0.0)
+            reference_cost_economic = (
+                reference_grid_import * price_buy - reference_grid_export * price_sell * sell_discount
+            )
+            reference_economic_for_reward = (
+                reference_cost_economic / scale_economic if scale_components else reference_cost_economic
+            )
+            reference_reward_term_economic = -coeff_economic * reference_economic_for_reward
+
         if use_pymgrid_reward:
             reward_term_economic = 0.0
             reward_term_soe_violation = 0.0
@@ -936,7 +954,6 @@ class OfflineMicrogridRLEnv(gym.Env):
             reward_term_action_sign_change = 0.0
             reward_term_micro_throughput = 0.0
             reward_term_soe_boundary = 0.0
-            reward_term_bad_logic = 0.0
             reward_term_cyclic_aging = 0.0
             reward_term_calendar_aging = 0.0
             reward_term_wear_cost = 0.0
@@ -945,13 +962,23 @@ class OfflineMicrogridRLEnv(gym.Env):
             reward_raw = reward_term_pymgrid
         else:
             reward_term_economic = -coeff_economic * economic_for_reward
+            if relative_reference_enabled:
+                reward_term_reference_delta_raw = reward_term_economic - reference_reward_term_economic
+                reward_term_reference_denom = (
+                    max(abs(reference_reward_term_economic), relative_reference_eps)
+                    if relative_reference_normalize
+                    else 1.0
+                )
+                reward_term_reference_delta_scaled = reward_term_reference_delta_raw / reward_term_reference_denom
+                reward_term_reference = relative_reference_weight * reward_term_reference_delta_scaled
+                reward_term_economic = reward_term_reference
+
             reward_term_soe_violation = -coeff_soe_violation * soe_violation
             reward_term_action_violation = -coeff_action_violation * action_violation_for_reward
             reward_term_action_smoothness = -coeff_action_smoothness * action_smoothness_for_reward
             reward_term_action_sign_change = -coeff_action_sign_change * action_sign_change
             reward_term_micro_throughput = -coeff_micro_throughput * micro_throughput_for_reward
             reward_term_soe_boundary = -coeff_soe_boundary * soe_boundary_for_reward
-            reward_term_bad_logic = -coeff_bad_logic * bad_logic_penalty
             reward_term_cyclic_aging = -coeff_cyclic_aging * cyclic_aging
             reward_term_calendar_aging = -coeff_soh_calendar * calendar_aging
             reward_term_wear_cost = -coeff_wear_cost * wear_cost_for_reward
@@ -966,7 +993,6 @@ class OfflineMicrogridRLEnv(gym.Env):
                 + reward_term_micro_throughput
                 + reward_term_action_violation
                 + reward_term_soe_boundary
-                + reward_term_bad_logic
                 + reward_term_cyclic_aging
                 + reward_term_calendar_aging
                 + reward_term_wear_cost
@@ -987,13 +1013,28 @@ class OfflineMicrogridRLEnv(gym.Env):
                 "reward_mode": "pymgrid" if use_pymgrid_reward else "custom",
                 "reward_term_pymgrid": float(reward_term_pymgrid),
                 "reward_term_economic": float(reward_term_economic),
+                "relative_reference_enabled": bool(relative_reference_enabled),
+                "relative_reference_policy": str(relative_reference_policy),
+                "relative_reference_normalize": bool(relative_reference_normalize),
+                "relative_reference_eps": float(relative_reference_eps),
+                "relative_reference_weight": float(relative_reference_weight),
+                "reward_term_reference": float(reward_term_reference),
+                "reward_term_reference_delta_raw": float(reward_term_reference_delta_raw),
+                "reward_term_reference_delta_scaled": float(reward_term_reference_delta_scaled),
+                "reward_term_reference_denom": float(reward_term_reference_denom),
+                "reference_reward_term_economic": float(reference_reward_term_economic),
+                "reference_grid_import": float(reference_grid_import),
+                "reference_grid_export": float(reference_grid_export),
+                "reference_battery_action": float(reference_battery_action),
+                "reference_grid_action_requested": float(reference_grid_action_requested),
+                "reference_grid_action": float(reference_grid_action),
+                "reference_cost_economic": float(reference_cost_economic),
                 "reward_term_soe_violation": float(reward_term_soe_violation),
                 "reward_term_action_violation": float(reward_term_action_violation),
                 "reward_term_action_smoothness": float(reward_term_action_smoothness),
                 "reward_term_action_sign_change": float(reward_term_action_sign_change),
                 "reward_term_micro_throughput": float(reward_term_micro_throughput),
                 "reward_term_soe_boundary": float(reward_term_soe_boundary),
-                "reward_term_bad_logic": float(reward_term_bad_logic),
                 "reward_term_cyclic_aging": float(reward_term_cyclic_aging),
                 "reward_term_calendar_aging": float(reward_term_calendar_aging),
                 "reward_term_wear_cost": float(reward_term_wear_cost),
@@ -1013,8 +1054,6 @@ class OfflineMicrogridRLEnv(gym.Env):
                 "action_smoothness": float(action_smoothness),
                 "micro_throughput": float(micro_throughput),
                 "action_violation_flag": float(action_violation_flag),
-                "bad_logic": bool(bad_logic),
-                "bad_logic_penalty": float(bad_logic_penalty),
                 "self_sufficiency_ratio": float(ssr),
                 "battery_action_requested": float(requested_batt),
                 "battery_action_after_policy": float(requested_batt_after_policy),
@@ -1194,76 +1233,6 @@ class OfflineMicrogridRLEnv(gym.Env):
                 if isinstance(entry, dict):
                     return entry
         return {}
-
-    def _compute_bad_logic_penalty(
-        self,
-        step_idx: int,
-        net_load: float,
-        p_batt: float,
-        soe: float,
-        price_buy: float,
-        price_sell: float,
-    ) -> Tuple[float, bool]:
-        if np.isclose(p_batt, 0.0, atol=1e-9):
-            return 0.0, False
-
-        reward_cfg = self.config["rl"]["reward"]
-        sell_discount = float(reward_cfg.get("sell_discount", 0.8))
-        aging_weight = float(reward_cfg.get("bad_logic_aging_weight", 0.1))
-        discount = float(reward_cfg.get("bad_logic_discount", 0.9))
-
-        def compute_payoff(p_batt_eval, net_load_eval, buy, sell):
-            if p_batt_eval > 0:
-                grid_buy = max(0.0, net_load_eval - p_batt_eval)
-                grid_sell = max(0.0, p_batt_eval - net_load_eval)
-            else:
-                grid_buy = net_load_eval - p_batt_eval
-                grid_sell = max(0.0, -net_load_eval - p_batt_eval)
-            cost = grid_buy * buy - grid_sell * sell * sell_discount
-            aging = abs(p_batt_eval) * aging_weight
-            return -cost - aging
-
-        optimal_batt = max(0.0, net_load) if net_load > 0 else min(0.0, net_load)
-        optimal_payoff = compute_payoff(optimal_batt, net_load, price_buy, price_sell)
-
-        forecast_payoff = 0.0
-        if self.num_forecast > 0:
-            max_future = min(self.num_forecast, self.max_steps - step_idx - 1)
-            for i in range(1, max_future + 1):
-                future_idx = step_idx + i
-                future_net = float(self.load_series[future_idx] - self.pv_series[future_idx])
-                future_buy = float(self.price_buy[future_idx])
-                future_sell = float(self.price_sell[future_idx])
-                forecast_payoff += (discount ** i) * compute_payoff(p_batt, future_net, future_buy, future_sell)
-
-        band = _resolve_band(self.timestamps_local.iloc[step_idx], self.config["ems"]["price_bands"])
-        status = _band_to_status(band, self.config["ems"]["price_bands"])
-
-        bad_logic = False
-        penalty = 0.0
-        # If battery is charging when there is deficit or discharging when there is surplus
-        if (net_load > 0 and p_batt < 0) or (net_load < 0 and p_batt > 0):
-            bad_logic = True
-            # Case of deficit and battery is charging
-            if net_load > 0:
-                # This branch is considered only if there are forecasts available
-                # If battery is at min SoE and we are in the minimum price band, do not penalize
-                if np.isclose(soe, self.battery_module.min_soc, atol=1e-1) and status == "min":
-                    if forecast_payoff >= optimal_payoff - 0.1 * abs(optimal_payoff):
-                        bad_logic = False
-                else:
-                    penalty = abs(p_batt) * (1.0 if soe > 0.5 else 0.5)
-            # Case of surplus and battery is discharging
-            else:
-                # This branch is considered only if there are forecasts available
-                # If battery is at max SoE and we are in the maximum price band, do not penalize
-                if np.isclose(soe, self.battery_module.max_soc, atol=1e-1) and status == "max":
-                    if forecast_payoff >= optimal_payoff - 0.1 * abs(optimal_payoff):
-                        bad_logic = False
-                else:
-                    penalty = abs(p_batt) * (1.0 if soe < 0.5 else 0.5)
-
-        return float(penalty), bool(bad_logic)
 
     def _self_sufficiency_ratio(self, load_kwh: float, pv_kwh: float, p_batt: float) -> float:
         if load_kwh <= 0:

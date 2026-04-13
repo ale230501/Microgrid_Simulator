@@ -139,7 +139,6 @@ rl:
     coeff_economic: 3.0
     coeff_soc_violation: 5.0
     coeff_action_violation: 1.0
-    coeff_bad_logic: 0
     coeff_soh_calendar: 0
     coeff_cyclic_aging: 0.2
     coeff_wear_cost: 0.0
@@ -150,8 +149,13 @@ rl:
     scale_wear_cost: 1.0
     scale_ssr: 1.0
     sell_discount: 1
-    bad_logic_discount: 0
-    bad_logic_aging_weight: 0
+    # Relative comparison reward:
+    # if enabled, economic term is replaced by the delta vs reference policy.
+    relative_reference_enabled: false
+    relative_reference_policy: no_battery   # no_battery | rbc
+    relative_reference_normalize: true
+    relative_reference_eps: 1.0e-6
+    relative_reference_weight: 1.0
     soc_tolerance: 1e-3
     action_tolerance: 1e-3
     calendar_aging_per_step: 0.0

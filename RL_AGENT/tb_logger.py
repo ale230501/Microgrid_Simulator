@@ -35,7 +35,6 @@ class EpisodeMetricsAccumulator:
         self.episode_return = 0.0
         self.episode_return_normalized = 0.0
         self.cost_economic_sum = 0.0
-        self.bad_logic_penalty_sum = 0.0
         self.cyclic_aging_sum = 0.0
         self.calendar_aging_sum = 0.0
         self.wear_cost_sum = 0.0
@@ -56,7 +55,6 @@ class EpisodeMetricsAccumulator:
         self.length += 1
 
         self.cost_economic_sum += _safe_float(info.get("cost_economic", 0.0))
-        self.bad_logic_penalty_sum += _safe_float(info.get("bad_logic_penalty", 0.0))
         self.cyclic_aging_sum += _safe_float(info.get("cyclic_aging", 0.0))
         self.calendar_aging_sum += _safe_float(info.get("calendar_aging", 0.0))
         self.wear_cost_sum += _safe_float(info.get("wear_cost", 0.0))
@@ -83,7 +81,6 @@ class EpisodeMetricsAccumulator:
                 "episode_reward_normalized_mean": 0.0,
                 "episode_length": 0,
                 "cost_economic_sum": 0.0,
-                "bad_logic_penalty_sum": 0.0,
                 "soe_violation_rate": 0.0,
                 "action_violation_rate": 0.0,
                 "action_smoothness_mean": 0.0,
@@ -102,7 +99,6 @@ class EpisodeMetricsAccumulator:
             "episode_reward_normalized_mean": self.episode_return_normalized / length,
             "episode_length": int(self.length),
             "cost_economic_sum": self.cost_economic_sum,
-            "bad_logic_penalty_sum": self.bad_logic_penalty_sum,
             "soe_violation_rate": self.soe_violation_sum / length,
             "action_violation_rate": self.action_violation_sum / length,
             "action_smoothness_mean": self.action_smoothness_sum / length,
@@ -129,7 +125,6 @@ class EpisodeSeriesBuffer:
             "action_violation": [],
             "action_smoothness": [],
             "micro_throughput": [],
-            "bad_logic_penalty": [],
             "cyclic_aging": [],
             "calendar_aging": [],
             "self_sufficiency_ratio": [],
@@ -138,7 +133,6 @@ class EpisodeSeriesBuffer:
             "reward_term_action_violation": [],
             "reward_term_action_smoothness": [],
             "reward_term_micro_throughput": [],
-            "reward_term_bad_logic": [],
             "reward_term_cyclic_aging": [],
             "reward_term_calendar_aging": [],
             "reward_term_wear_cost": [],
@@ -195,7 +189,6 @@ class EpisodeBehaviouralBuffer:
             "grid_export": [],
             "cost_economic": [],
             "wear_cost": [],
-            "bad_logic": [],
             "battery_action_was_clipped": [],
             "grid_action_was_clipped": [],
         }
@@ -268,7 +261,6 @@ class TensorboardLogger:
             ("reward/components/action_violation", "action_violation"),
             ("reward/components/action_smoothness", "action_smoothness"),
             ("reward/components/micro_throughput", "micro_throughput"),
-            ("reward/components/bad_logic_penalty", "bad_logic_penalty"),
             ("reward/components/cyclic_aging", "cyclic_aging"),
             ("reward/components/calendar_aging", "calendar_aging"),
             ("reward/components/wear_cost", "wear_cost"),
@@ -279,7 +271,6 @@ class TensorboardLogger:
             ("reward/terms/action_violation", "reward_term_action_violation"),
             ("reward/terms/action_smoothness", "reward_term_action_smoothness"),
             ("reward/terms/micro_throughput", "reward_term_micro_throughput"),
-            ("reward/terms/bad_logic", "reward_term_bad_logic"),
             ("reward/terms/cyclic_aging", "reward_term_cyclic_aging"),
             ("reward/terms/calendar_aging", "reward_term_calendar_aging"),
             ("reward/terms/wear_cost", "reward_term_wear_cost"),
@@ -298,7 +289,6 @@ class TensorboardLogger:
             ("load_kwh", "load_kwh"),
             ("pv_kwh", "pv_kwh"),
             ("wear_cost", "wear_cost"),
-            ("flags/bad_logic", "bad_logic"),
             ("flags/battery_action_was_clipped", "battery_action_was_clipped"),
             ("flags/grid_action_was_clipped", "grid_action_was_clipped"),
         ]
@@ -383,7 +373,6 @@ class TensorboardLogger:
             ("reward_term_economic", "Economic"),
             ("reward_term_soe_violation", "SoE violation"),
             ("reward_term_action_violation", "Action violation"),
-            ("reward_term_bad_logic", "Bad logic"),
             ("reward_term_cyclic_aging", "Cyclic aging"),
             ("reward_term_calendar_aging", "Calendar aging"),
             ("reward_term_wear_cost", "Wear cost"),
@@ -459,7 +448,6 @@ class TensorboardLogger:
         grid_export = arr("grid_export")
         cost_economic = arr("cost_economic")
         wear_cost = arr("wear_cost")
-        bad_logic = arr("bad_logic")
         batt_clipped_flag = arr("battery_action_was_clipped")
         grid_clipped_flag = arr("grid_action_was_clipped")
 
@@ -485,7 +473,6 @@ class TensorboardLogger:
         wear_cost_sum = float(np.nansum(np.nan_to_num(wear_cost, nan=0.0)))
         batt_clip_rate = safe_mean((batt_clipped_flag > 0.5).astype(float))
         grid_clip_rate = safe_mean((grid_clipped_flag > 0.5).astype(float))
-        bad_logic_rate = safe_mean((bad_logic > 0.5).astype(float))
 
         charge_while_deficit_rate = safe_mean(((net_load > 0.0) & (batt_action < 0.0)).astype(float))
         discharge_while_surplus_rate = safe_mean(((net_load < 0.0) & (batt_action > 0.0)).astype(float))
@@ -497,7 +484,6 @@ class TensorboardLogger:
         self.writer.add_scalar(f"{prefix}/behavioural/cost/wear_sum", wear_cost_sum, int(episode_idx))
         self.writer.add_scalar(f"{prefix}/behavioural/flags/battery_clip_rate", batt_clip_rate, int(episode_idx))
         self.writer.add_scalar(f"{prefix}/behavioural/flags/grid_clip_rate", grid_clip_rate, int(episode_idx))
-        self.writer.add_scalar(f"{prefix}/behavioural/flags/bad_logic_rate", bad_logic_rate, int(episode_idx))
         self.writer.add_scalar(
             f"{prefix}/behavioural/logic/charge_while_deficit_rate",
             charge_while_deficit_rate,
