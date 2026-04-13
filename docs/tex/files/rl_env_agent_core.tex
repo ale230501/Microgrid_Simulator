@@ -38,8 +38,9 @@ dell'azione RL in setpoint batteria e calcolo della reward composita.
   (es. \texttt{soe\_violation}, \texttt{reward\_term\_soe\_violation}).
 \item Modalita reward:
   \texttt{rl.reward.mode: custom} usa la somma pesata dei termini RL;
-  \texttt{rl.reward.mode: pymgrid} usa direttamente la \texttt{base\_reward}
-  restituita da \texttt{microgrid.step}.
+  \texttt{rl.reward.mode: pymgrid} usa la \texttt{base\_reward}
+  restituita da \texttt{microgrid.step}, oppure il delta rispetto a una
+  policy di riferimento se la reward relativa e' attiva.
 \item Reward relativa opzionale:
   con \texttt{rl.reward.relative\_reference\_enabled: true} il termine economico
   viene sostituito dal delta rispetto a una policy di riferimento
@@ -69,7 +70,8 @@ dell'azione RL in setpoint batteria e calcolo della reward composita.
 \item Esegue \texttt{microgrid.step}, legge i log modulo e compone reward e diagnostica.
 \item La reward finale usata dall'agente dipende da \texttt{rl.reward.mode}:
   in \texttt{custom} e' la somma pesata dei termini RL, in \texttt{pymgrid}
-  coincide con la \texttt{base\_reward} del simulatore.
+  coincide con la \texttt{base\_reward} del simulatore solo quando
+  \texttt{relative\_reference\_enabled=false}.
 \item Se la reward relativa e' attiva, il confronto col riferimento viene fatto
   step-by-step e i campi \texttt{reference\_*} vengono esportati in \texttt{info}.
 \end{itemize}

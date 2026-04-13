@@ -1,8 +1,8 @@
-PWD d:/TESI MAGISTRALE/Microgrid_Simulator/docs/tex
+PWD d:/TESI MAGISTRALE/Microgrid_Simulator_comparison/docs/tex
 INPUT d:/texlive/2025/texmf.cnf
 INPUT d:/texlive/2025/texmf-dist/web2c/texmf.cnf
 INPUT d:/texlive/2025/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT d:/TESI MAGISTRALE/Microgrid_Simulator/docs/tex/main.tex
+INPUT d:/TESI MAGISTRALE/Microgrid_Simulator_comparison/docs/tex/main.tex
 OUTPUT build/main.log
 INPUT d:/texlive/2025/texmf-dist/tex/latex/base/report.cls
 INPUT d:/texlive/2025/texmf-dist/tex/latex/base/report.cls

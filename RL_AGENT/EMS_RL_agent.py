@@ -252,6 +252,10 @@ class OfflineMicrogridRLEnv(gym.Env):
         self.pv_module = self.microgrid.modules["pv"][0]
         self.grid_module = self.microgrid.modules["grid"][0]
         self.battery_module = self.microgrid.battery[0]
+        try:
+            self.balancing_module = self.microgrid.modules["balancing"][0]
+        except Exception:
+            self.balancing_module = None
 
         rl_cfg = self.config["rl"]
         self.num_forecast = int(rl_cfg.get("num_forecast", 0))
@@ -741,6 +745,21 @@ class OfflineMicrogridRLEnv(gym.Env):
             normalized=False,
         )
         bms_battery_info = self._extract_battery_step_info(info)
+        grid_step_info = {}
+        balancing_step_info = {}
+        if isinstance(info, dict):
+            grid_entries = info.get("grid")
+            if isinstance(grid_entries, list):
+                for entry in grid_entries:
+                    if isinstance(entry, dict):
+                        grid_step_info = entry
+                        break
+            balancing_entries = info.get("balancing")
+            if isinstance(balancing_entries, list):
+                for entry in balancing_entries:
+                    if isinstance(entry, dict):
+                        balancing_step_info = entry
+                        break
         current_soh = self._get_soh()
 
         batt_actual, batt_discharge, batt_charge = self._get_battery_flow()
@@ -748,6 +767,26 @@ class OfflineMicrogridRLEnv(gym.Env):
 
         price_buy = float(self.price_buy[step_idx])
         price_sell = float(self.price_sell[step_idx])
+        co2_production_step = 0.0
+        try:
+            co2_production_step = float(grid_step_info.get("co2_production", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            co2_production_step = 0.0
+        co2_per_kwh_step = 0.0
+        if grid_import > 1e-9:
+            co2_per_kwh_step = max(0.0, co2_production_step / max(grid_import, 1e-9))
+        if co2_per_kwh_step <= 0.0:
+            try:
+                co2_per_kwh_step = float(self.grid_series[step_idx, 2])
+            except Exception:
+                co2_per_kwh_step = 0.0
+        if not np.isfinite(co2_per_kwh_step) or co2_per_kwh_step < 0.0:
+            co2_per_kwh_step = 0.0
+        grid_co2_cost_per_unit = float(getattr(self.grid_module, "cost_per_unit_co2", 0.0) or 0.0)
+        co2_cost_step = co2_production_step * grid_co2_cost_per_unit
+        balancing_module = getattr(self, "balancing_module", None)
+        loss_load_cost_coeff = float(getattr(balancing_module, "loss_load_cost", 0.0) or 0.0)
+        overgeneration_cost_coeff = float(getattr(balancing_module, "overgeneration_cost", 0.0) or 0.0)
 
         reward_cfg = self.config["rl"]["reward"]
         reward_mode_raw = reward_cfg.get("mode", "custom")
@@ -902,6 +941,14 @@ class OfflineMicrogridRLEnv(gym.Env):
         reference_grid_export = 0.0
         reference_cost_economic = 0.0
         reference_reward_term_economic = 0.0
+        reference_loss_load_energy = 0.0
+        reference_overgeneration_energy = 0.0
+        reference_internal_energy_delta = 0.0
+        reference_cycle_cost_step = 0.0
+        reference_wear_cost_step = 0.0
+        reference_co2_production_step = 0.0
+        reference_co2_cost_step = 0.0
+        reference_reward_term_pymgrid_proxy = 0.0
         reward_term_reference = 0.0
         reward_term_reference_delta_raw = 0.0
         reward_term_reference_delta_scaled = 0.0
@@ -945,6 +992,39 @@ class OfflineMicrogridRLEnv(gym.Env):
                 reference_cost_economic / scale_economic if scale_components else reference_cost_economic
             )
             reference_reward_term_economic = -coeff_economic * reference_economic_for_reward
+            reference_net_balance = float(net_load) - reference_battery_action - reference_grid_action
+            if reference_net_balance >= 0.0:
+                reference_loss_load_energy = reference_net_balance
+                reference_overgeneration_energy = 0.0
+            else:
+                reference_loss_load_energy = 0.0
+                reference_overgeneration_energy = -reference_net_balance
+            reference_eta = float(getattr(self.battery_module, "efficiency", 1.0) or 1.0)
+            if not np.isfinite(reference_eta) or reference_eta <= 0.0:
+                reference_eta = 1.0
+            if reference_battery_action > 0.0:
+                reference_internal_energy_delta = -reference_battery_action / reference_eta
+            elif reference_battery_action < 0.0:
+                reference_internal_energy_delta = (-reference_battery_action) * reference_eta
+            else:
+                reference_internal_energy_delta = 0.0
+            reference_cycle_cost_step = abs(reference_internal_energy_delta) * float(
+                getattr(self.battery_module, "battery_cost_cycle", 0.0) or 0.0
+            )
+            reference_wear_cost_step = 0.0
+            reference_co2_production_step = reference_grid_import * co2_per_kwh_step
+            reference_co2_cost_step = reference_co2_production_step * grid_co2_cost_per_unit
+            reference_loss_load_cost_step = reference_loss_load_energy * loss_load_cost_coeff
+            reference_overgeneration_cost_step = reference_overgeneration_energy * overgeneration_cost_coeff
+            reference_reward_term_pymgrid_proxy = (
+                -reference_grid_import * price_buy
+                + reference_grid_export * price_sell
+                - reference_co2_cost_step
+                - reference_loss_load_cost_step
+                - reference_overgeneration_cost_step
+                - reference_cycle_cost_step
+                - reference_wear_cost_step
+            )
 
         if use_pymgrid_reward:
             reward_term_economic = 0.0
@@ -959,7 +1039,18 @@ class OfflineMicrogridRLEnv(gym.Env):
             reward_term_wear_cost = 0.0
             reward_term_ssr = 0.0
             reward_term_pymgrid = float(base_reward)
-            reward_raw = reward_term_pymgrid
+            if relative_reference_enabled:
+                reward_term_reference_delta_raw = reward_term_pymgrid - reference_reward_term_pymgrid_proxy
+                reward_term_reference_denom = (
+                    max(abs(reference_reward_term_pymgrid_proxy), relative_reference_eps)
+                    if relative_reference_normalize
+                    else 1.0
+                )
+                reward_term_reference_delta_scaled = reward_term_reference_delta_raw / reward_term_reference_denom
+                reward_term_reference = relative_reference_weight * reward_term_reference_delta_scaled
+                reward_raw = reward_term_reference
+            else:
+                reward_raw = reward_term_pymgrid
         else:
             reward_term_economic = -coeff_economic * economic_for_reward
             if relative_reference_enabled:
@@ -1023,12 +1114,20 @@ class OfflineMicrogridRLEnv(gym.Env):
                 "reward_term_reference_delta_scaled": float(reward_term_reference_delta_scaled),
                 "reward_term_reference_denom": float(reward_term_reference_denom),
                 "reference_reward_term_economic": float(reference_reward_term_economic),
+                "reference_reward_term_pymgrid_proxy": float(reference_reward_term_pymgrid_proxy),
                 "reference_grid_import": float(reference_grid_import),
                 "reference_grid_export": float(reference_grid_export),
                 "reference_battery_action": float(reference_battery_action),
                 "reference_grid_action_requested": float(reference_grid_action_requested),
                 "reference_grid_action": float(reference_grid_action),
                 "reference_cost_economic": float(reference_cost_economic),
+                "reference_loss_load_energy_step": float(reference_loss_load_energy),
+                "reference_overgeneration_energy_step": float(reference_overgeneration_energy),
+                "reference_internal_energy_delta": float(reference_internal_energy_delta),
+                "reference_cycle_cost_step": float(reference_cycle_cost_step),
+                "reference_wear_cost_step": float(reference_wear_cost_step),
+                "reference_co2_production_step": float(reference_co2_production_step),
+                "reference_co2_cost_step": float(reference_co2_cost_step),
                 "reward_term_soe_violation": float(reward_term_soe_violation),
                 "reward_term_action_violation": float(reward_term_action_violation),
                 "reward_term_action_smoothness": float(reward_term_action_smoothness),
@@ -1040,6 +1139,9 @@ class OfflineMicrogridRLEnv(gym.Env):
                 "reward_term_wear_cost": float(reward_term_wear_cost),
                 "reward_term_ssr": float(reward_term_ssr),
                 "cost_economic": float(cost_economic),
+                "co2_production_step": float(co2_production_step),
+                "co2_per_kwh_step": float(co2_per_kwh_step),
+                "co2_cost_step": float(co2_cost_step),
                 "wear_cost": float(wear_cost),
                 "load_kwh": float(load_kwh),
                 "pv_kwh": float(pv_kwh),
